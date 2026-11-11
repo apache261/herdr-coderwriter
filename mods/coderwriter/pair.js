@@ -13,7 +13,46 @@ export function prefs() {
   const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
+  p.models = Array.isArray(p.models) ? p.models : [];
   return p;
+}
+
+// ---- custom models (OpenAI-compatible, run through Codex) -------------------------
+// A model: { id, name, base_url, model, key: "env" | "file" | "none", env }.
+// Its agent key is "m:<id>"; Codex sees it as provider "cw_<id>". Codex only speaks
+// the Responses API to providers (wire_api "chat" is gone), so the endpoint must
+// serve <base_url>/responses.
+export const isCustom = (key) => typeof key === "string" && key.startsWith("m:");
+export function customModel(key) { return isCustom(key) ? prefs().models.find((m) => m.id === key.slice(2)) ?? null : null; }
+export const providerId = (m) => `cw_${m.id}`;
+export const keyEnvName = (m) => m.key === "env" ? m.env : `CODERWRITER_KEY_${m.id.toUpperCase()}`;
+export const keyDir = () => `${home()}/.config/coderwriter/keys`;
+export const keyFile = (m) => `${keyDir()}/${m.id}.key`;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const toml = (v) => JSON.stringify(String(v)); // a TOML basic string
+
+// Loads the key into the environment, then execs Codex. The key itself never sits in
+// argv: a file is read here, and an env var missing from herdr-core's environment is
+// asked of the person's interactive shell (where it is usually exported).
+const KEY_LOADER = 'mode=$1; name=$2; file=$3; shift 3; ' +
+  'case "$mode" in ' +
+  'file) if [ -r "$file" ]; then v=$(cat "$file"); export "$name=$v"; else echo "coderwriter: no saved API key ($file)" >&2; fi ;; ' +
+  'env) eval "cur=\\${$name:-}"; if [ -z "$cur" ] && [ -n "$SHELL" ]; then cur=$("$SHELL" -ic "printf %s \\"\\$$name\\"" 2>/dev/null </dev/null); ' +
+  'if [ -n "$cur" ]; then export "$name=$cur"; else echo "coderwriter: $name is not set" >&2; fi; fi ;; ' +
+  'esac; exec "$@"';
+
+export function customArgv(m) {
+  const pid = providerId(m);
+  const conf = [
+    "-c", `model_providers.${pid}.name=${toml(m.name || m.model)}`,
+    "-c", `model_providers.${pid}.base_url=${toml(String(m.base_url).replace(/\/+$/, ""))}`,
+    "-c", `model_providers.${pid}.wire_api="responses"`,
+  ];
+  if (m.key !== "none") conf.push("-c", `model_providers.${pid}.env_key=${toml(keyEnvName(m))}`);
+  conf.push("-c", `model_provider=${toml(pid)}`, "-m", m.model);
+  const codex = [...BASE_RUN.codex, ...conf];
+  if (m.key === "none" || (m.key === "env" && !ENV_NAME.test(m.env ?? ""))) return codex;
+  return ["sh", "-c", KEY_LOADER, "sh", m.key, keyEnvName(m), keyFile(m), ...codex];
 }
 
 // How each agent starts with no extra flags: Herdr's own commands for them.
@@ -43,6 +82,9 @@ export function joinArgs(args) {
 
 // The argv a pair starts an agent with: its base command plus the person's flags.
 export function launchArgv(agent) {
+  const m = customModel(agent.key);
+  // Custom models run Codex, so they take Codex's flags.
+  if (m) return [...customArgv(m), ...splitArgs(prefs().flags.codex ?? "")];
   const base = BASE_RUN[agent.key] ?? agent.run;
   return [...base, ...splitArgs(prefs().flags[agent.key] ?? "")];
 }

@@ -89,9 +89,14 @@ export function openUsagePanel() {
 }
 
 // The compact chip in the coderwriter bar: today's tokens (+ Codex's 5h limit).
+export function todayTotal(u) {
+  const custom = Object.values(u?.today_providers ?? {}).reduce((n, tok) => n + (tok?.total ?? 0), 0);
+  return (u?.today?.claude?.total ?? 0) + (u?.today?.codex?.total ?? 0) + custom;
+}
+
 export function usageChip(t) {
   const u = usage();
-  const today = (u?.today?.claude?.total ?? 0) + (u?.today?.codex?.total ?? 0);
+  const today = todayTotal(u);
   const prim = u?.limits?.codex?.primary;
   const hot = prim && left(prim) <= 20;
   return h_flex().id("usage-chip").h(28).px(9).gap(6).items_center().flex_none().rounded(7)
@@ -140,10 +145,17 @@ export class Usage {
     const sc = scope();
     const stale = !u || u.folder !== sc.folder || u.since_req !== sc.since;
     if (stale) cx.spawn(async (cx) => { await refreshUsage(); cx.notify(); });
-    const agentRow = (key, tok) => this.card(t, [
+    // A Codex provider: "openai" is Codex itself, "cw_<id>" one of our custom models,
+    // anything else a provider from the person's own ~/.codex/config.toml.
+    const providerLabel = (prov) => {
+      const m = prov?.startsWith("cw_") ? P.customModel(`m:${prov.slice(3)}`) : null;
+      return m ? (m.name || m.model) : prov?.startsWith("cw_") ? "Removed custom model" : `Codex · ${prov}`;
+    };
+    const icon = (key, prov) => prov && prov !== "openai" ? svg(I("cpu")).size(14).flex_none().text_color(t.accent) : image(`icons/${key}.svg`).size(14).flex_none();
+    const agentRow = (key, tok, prov) => this.card(t, [
       h_flex().gap(8).items_center()
-        .child(image(`icons/${key}.svg`).size(14).flex_none())
-        .child(div().flex_1().text_size(12.5).text_color(t.foreground).child(NAMES[key]))
+        .child(icon(key, prov))
+        .child(div().flex_1().text_size(12.5).text_color(t.foreground).child(prov ? providerLabel(prov) : NAMES[key]))
         .child(div().text_size(13).font_semibold().text_color(t.foreground).child(fmt(tok?.total))),
       this.breakdown(t, tok),
     ]);
@@ -162,20 +174,23 @@ export class Usage {
 
     const sessions = (u && !stale ? u.sessions : []) ?? [];
     const writerKey = sc.pair?.writer?.agent, reviewerKey = sc.pair?.reviewer?.agent;
-    const role = (s) => !sc.pair ? null : s.agent === writerKey && s.agent === reviewerKey ? null : s.agent === writerKey ? "writer" : s.agent === reviewerKey ? "reviewer" : null;
+    // The agent key a session belongs to: claude, codex, or m:<id> for a custom model.
+    const keyOf = (s) => s.provider?.startsWith("cw_") ? `m:${s.provider.slice(3)}` : s.agent;
+    const role = (s) => { const k = keyOf(s); return !sc.pair ? null : k === writerKey && k === reviewerKey ? null : k === writerKey ? "writer" : k === reviewerKey ? "reviewer" : null; };
+    const custom = (s) => s.provider && s.provider !== "openai";
     const sessionRow = (s) => {
       const r = role(s);
       const ctx = s.window ? `${fmt(s.context)} / ${fmt(s.window)} context` : `${fmt(s.context)} context`;
       return this.card(t, [
         h_flex().gap(7).items_center()
-          .child(image(`icons/${s.agent}.svg`).size(14).flex_none())
-          .child(div().text_size(12.3).text_color(t.foreground).child(NAMES[s.agent]))
+          .child(icon(s.agent, s.provider))
+          .child(div().text_size(12.3).text_color(t.foreground).child(custom(s) ? providerLabel(s.provider) : NAMES[s.agent]))
           .when(Boolean(r), (el) => el.child(div().px(5).h(16).flex().items_center().rounded(4).text_size(10.3).font_semibold()
             .bg(t[r === "writer" ? "ansi4" : "ansi5"] + "26").text_color(t[r === "writer" ? "ansi4" : "ansi5"]).child(r.toUpperCase())))
           .child(div().flex_1())
           .child(div().text_size(13).font_semibold().text_color(t.foreground).child(fmt(s.tokens?.total))),
         h_flex().gap(8).text_size(11).text_color(t.dim)
-          .child(div().truncate().child(s.model ?? ""))
+          .child(div().truncate().child(custom(s) ? `${s.model ?? ""} · no plan limits` : s.model ?? ""))
           .child(div().flex_1())
           .child(div().flex_none().child(ctx))
           .child(div().flex_none().child(ago(s.last))),
@@ -185,6 +200,8 @@ export class Usage {
 
     const scopeLabel = sc.pair ? "This pair (since it started)" : "This folder (today)";
     const codexLimits = u?.limits?.codex;
+    const hasLimits = Boolean(codexLimits?.primary?.used != null || codexLimits?.secondary?.used != null);
+    const providers = Object.entries(u?.today_providers ?? {}).filter(([, tok]) => (tok?.total ?? 0) > 0);
 
     return v_flex().size_full().min_w(0).bg(t.background).rounded(10).border_1().border_color(t.border).overflow_hidden()
       .child(v_flex().flex_none().gap(3).px(12).pt(10).pb(8).border_b(1).border_color(t.border)
@@ -202,13 +219,18 @@ export class Usage {
           .child(this.title(t, scopeLabel.toUpperCase(), sessions.length ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}` : null))
           .children(sessions.length ? sessions.map(sessionRow)
             : [div().px(2).text_size(11.8).text_color(t.dim).child(stale ? "Loading…" : "No Claude Code or Codex activity here yet.")])
-          .child(this.title(t, "TODAY · ALL FOLDERS", u ? fmt((u.today?.claude?.total ?? 0) + (u.today?.codex?.total ?? 0)) : null))
+          .child(this.title(t, "TODAY · ALL FOLDERS", u ? fmt(todayTotal(u)) : null))
           .child(agentRow("claude", u?.today?.claude))
           .child(agentRow("codex", u?.today?.codex))
-          .when(Boolean(codexLimits?.primary || codexLimits?.secondary), (el) => el
-            .child(this.title(t, `CODEX LIMITS${codexLimits?.plan ? " · " + String(codexLimits.plan).toUpperCase() : ""}`,
-              codexLimits?.at ? `${codexLimits.source === "live" ? "live" : "from logs"} · ${ago(codexLimits.at)}` : null))
-            .child(this.card(t, [limitRow(codexLimits.primary), limitRow(codexLimits.secondary)].filter(Boolean))))
+          .children(providers.map(([prov, tok]) => agentRow("codex", tok, prov)))
+          .child(this.title(t, `CODEX PLAN LIMITS${codexLimits?.plan ? " · " + String(codexLimits.plan).toUpperCase() : ""}`,
+            codexLimits?.at ? `${codexLimits.source === "live" ? "live" : "from logs"} · ${ago(codexLimits.at)}` : null))
+          .child(this.card(t, [
+            ...(hasLimits ? [limitRow(codexLimits.primary), limitRow(codexLimits.secondary)].filter(Boolean)
+              : [div().text_size(11.8).text_color(t.muted).child(u ? "Not available: Codex isn't signed in with a ChatGPT plan (API-key logins are billed per token), or hasn't run yet." : "…")]),
+            ...(P.prefs().models.length || providers.length
+              ? [div().text_size(11).text_color(t.dim).child("Custom models don't count against these: their provider bills them.")] : []),
+          ]))
           .child(div().px(2).pt(2).text_size(10.8).text_color(t.dim)
             .child("Totals include cached input, which most plans bill at a discount. Claude plan limits aren't in its local logs; use /usage in Claude Code."))));
   }

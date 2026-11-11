@@ -51,7 +51,7 @@ def files(root):
     return out
 
 result = {"day_start": int(day_start * 1000), "since": int(since * 1000), "folder": folder,
-          "today": {"claude": zero(), "codex": zero()}, "sessions": [], "limits": None, "errors": []}
+          "today": {"claude": zero(), "codex": zero()}, "today_providers": {}, "sessions": [], "limits": None, "errors": []}
 
 # ---- Claude Code -----------------------------------------------------------
 claude_sessions = {}
@@ -142,7 +142,8 @@ for path in files(os.path.join(home, ".codex", "sessions")):
                 p = e.get("payload") or {}
                 ts = e.get("timestamp") or ""
                 rl = p.get("rate_limits")
-                if rl and ts >= limits_ts:
+                # Plan limits belong to ChatGPT-signed-in Codex, not to custom providers.
+                if rl and ts >= limits_ts and (meta.get("model_provider") or "openai") == "openai":
                     limits, limits_ts = rl, ts
                 info = p.get("info")
                 if not info:
@@ -160,12 +161,16 @@ for path in files(os.path.join(home, ".codex", "sessions")):
         continue
     if not last:
         continue
+    provider = meta.get("model_provider") or "openai"
     if last_ts >= DAY:
-        add(result["today"]["codex"], minus(last, base_day))
+        if provider == "openai":
+            add(result["today"]["codex"], minus(last, base_day))
+        else:
+            add(result["today_providers"].setdefault(provider, zero()), minus(last, base_day))
     if meta.get("cwd") == folder and last_ts >= SINCE:
         used = minus(last, base_since)
         if used["total"] > 0:
-            codex_sessions.append({"agent": "codex", "id": meta.get("id"), "model": model, "tokens": used,
+            codex_sessions.append({"agent": "codex", "provider": provider, "id": meta.get("id"), "model": model, "tokens": used,
                                    "first": meta.get("timestamp") or last_ts, "last": last_ts,
                                    "context": (last_turn or {}).get("input_tokens", 0) or 0, "window": window})
 

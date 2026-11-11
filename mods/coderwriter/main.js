@@ -10,6 +10,7 @@ import * as P from "./pair.js";
 import { Reviews } from "./reviews.js";
 import { Launch, isDangerous, customized } from "./launch.js";
 import { Usage, usageChip, refreshUsage } from "./usage.js";
+import { Models, modelLabel } from "./models.js";
 
 const I = (name) => `mods/coderwriter/icons/${name}.svg`;
 const KNOWN = "coderwriter.agents";
@@ -36,6 +37,18 @@ async function refreshKnown(machine) {
 
 export const ROLE_COLOR = { writer: "ansi4", reviewer: "ansi5" };
 
+// Claude, Codex, or a custom model (which runs Codex, so it's installed when Codex is).
+function agentFor(key, list) {
+  const m = P.customModel(key);
+  if (m) {
+    const codex = list.find((a) => a.key === "codex");
+    return { key, name: modelLabel(m), icon: I("cpu"), tint: true, installed: codex ? codex.installed : null, custom: m };
+  }
+  if (P.isCustom(key)) return { key, name: "Removed model", icon: I("cpu"), tint: true, installed: false };
+  return list.find((a) => a.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false, installed: null };
+}
+const pickerHeight = () => 112 + 31 * P.prefs().models.length + 40;
+
 class Picker {
   init(_props, cx) {
     const machine = spaces().find((s) => s.active)?.machine ?? null;
@@ -47,7 +60,7 @@ class Picker {
     const which = props().which;
     const chosen = P.prefs()[which];
     const list = known(this.machine);
-    const rows = P.AGENTS.map((key) => list.find((a) => a.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false, installed: null });
+    const rows = [...P.AGENTS, ...P.prefs().models.map((m) => `m:${m.id}`)].map((key) => agentFor(key, list));
     return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
       .child(div().px(9).pt(4).pb(5).text_size(11).text_color(t.dim).child(which === "writer" ? "Writer agent" : "Reviewer agent"))
       .children(rows.map((a) => {
@@ -58,9 +71,15 @@ class Picker {
           .on_click(() => { if (!ok) return; P.setPrefs({ [which]: a.key }); closeOverlay(props().overlay); })
           .child(agentIcon(a, 14, t.foreground))
           .child(div().flex_1().child(a.name))
-          .child(a.installed === false ? div().text_size(11).text_color(t.dim).child("not installed")
+          .child(a.installed === false ? div().text_size(11).text_color(t.dim).child(a.custom ? "needs Codex" : "not installed")
             : chosen === a.key ? svg(I("check")).size(14).text_color(t.accent) : div());
       }))
+      .child(div().h(1).mx(6).my(3).bg(t.border))
+      .child(h_flex().id("pick-manage").h(31).px(9).gap(10).rounded(7).items_center().text_color(t.muted)
+        .hover((s) => s.bg(t.selected).text_color(t.foreground))
+        .on_click(() => { closeOverlay(props().overlay); openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }); })
+        .child(svg(I("plus")).size(14))
+        .child(div().flex_1().child("Custom models…")))
       .when(Boolean(this.failed), (el) => el.child(div().px(9).py(4).text_size(11).text_color(t.dim).child("Could not check installed agents")));
   }
 }
@@ -122,10 +141,12 @@ class Bar {
       try {
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
-        const pick = (key) => list.find((a) => a.key === key);
+        const pick = (key) => agentFor(key, list);
         const w = pick(pr.writer), r = pick(pr.reviewer);
         for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer]]) {
-          if (!a || !a.installed) throw new Error(`The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
+          if (P.isCustom(key) && !a.custom) throw new Error(`The ${role} model was removed: pick another`);
+          if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
+            : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
         const task = this.task.trim();
         this.input.set_value("");
@@ -154,7 +175,7 @@ class Bar {
   agentChip(t, which) {
     const key = P.prefs()[which];
     const machine = this.space()?.machine ?? null;
-    const a = known(machine).find((x) => x.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false };
+    const a = agentFor(key, known(machine));
     const color = t[ROLE_COLOR[which]];
     return this.chip(t, `chip-${which}`, [
       svg(I(which === "writer" ? "pen" : "search")).size(13).text_color(color),
@@ -162,13 +183,14 @@ class Bar {
       agentIcon(a, 14, t.foreground),
       div().font_medium().child(a.name.replace(" Code", "")),
       svg(I("chevron-down")).size(12).text_color(t.dim),
-    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 210, height: 112, props: { role: "pick", which } }));
+    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 250, height: pickerHeight(), props: { role: "pick", which } }));
   }
 
   // Extra launch flags for the pair's agents: "default" when none, red when one skips permissions.
   launchChip(t) {
     const pr = P.prefs();
-    const keys = [...new Set([pr.writer, pr.reviewer])];
+    // Custom models run Codex, so Codex's flags are theirs.
+    const keys = [...new Set([pr.writer, pr.reviewer].map((k) => (P.isCustom(k) ? "codex" : k)))];
     const danger = keys.some(isDangerous);
     const custom = keys.filter(customized);
     const label = !custom.length ? "default" : custom.map((k) => (k === "claude" ? "Claude" : "Codex")).join(" + ") + " flags";
@@ -288,7 +310,7 @@ export default class CoderWriter extends View {
   init(initProps, cx) {
     const role = props()?.role;
     this.inner = role === "pick" ? new Picker() : role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
-      : role === "launch" ? new Launch() : new Bar();
+      : role === "launch" ? new Launch() : role === "models" ? new Models() : new Bar();
     this.inner.init(initProps, cx);
   }
   render(cx) { return this.inner.render(cx); }

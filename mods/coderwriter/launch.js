@@ -141,7 +141,8 @@ export class Launch {
     return v_flex().gap(7).px(12).py(10)
       .child(h_flex().gap(8).items_center()
         .child(image(`icons/${key}.svg`).size(15).flex_none())
-        .child(div().flex_1().text_size(12.8).font_semibold().text_color(t.foreground).child(NAMES[key]))
+        .child(div().text_size(12.8).font_semibold().text_color(t.foreground).child(NAMES[key]))
+        .child(div().flex_1().text_size(11).text_color(t.dim).child(key === "codex" && pr.models.length ? "also for your custom models" : ""))
         .child(tokens.length
           ? div().id(`reset-${key}`).text_size(11.3).text_color(t.muted).hover((s) => s.text_color(t.foreground)).cursor_pointer()
             .on_click((_e, cx) => { this.setFlags(key, ""); cx.notify(); }).child("Reset to default")

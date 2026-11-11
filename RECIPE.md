@@ -2,7 +2,8 @@
 
 A Herdr layout for running two coding agents as a pair: a **writer** (Claude Code by
 default) makes the change and a **reviewer** (Codex by default) reviews the uncommitted
-diff, round after round, until it approves or a round limit is reached. A bar above the
+diff, round after round, until it approves or a round limit is reached. Either side can also be a
+custom model on any OpenAI-compatible endpoint, run through Codex. A bar above the
 panes sets up and drives the pair, each pane's header says which role it plays, and side
 panels show the review rounds, the token usage of both agents and Codex's plan limits,
 next to Herdr's own Files and Changes panels. The spaces and agents sidebar stays on the
@@ -26,8 +27,10 @@ and dark themes):
 - **coderwriter bar**, 46 px, `chrome` background, bottom border. Left to right:
   - pen icon (`ansi4`) and **coderwriter** in semibold 12.8 px;
   - **Writer** chip (pen, `ansi4`) and **Reviewer** chip (magnifier, `ansi5`), each with
-    the agent's icon and name and a chevron; a click opens a 210×112 popup listing Claude
-    Code and Codex (not installed ones dimmed, a check on the chosen one);
+    the agent's icon and name and a chevron; a click opens a 250 px popup listing Claude
+    Code, Codex and your custom models (a chip icon in `accent`; not installed ones dimmed,
+    custom models say "needs Codex" without it; a check on the chosen one), then a divider and
+    **Custom models…**;
   - **Launch** chip: `default`, or which agents have extra flags (`Claude flags`); red
     border, red tint and a warning icon while a permission-skipping flag is on;
   - folder chip: the folder new pairs start in (follows the focused pane until picked,
@@ -58,9 +61,19 @@ and dark themes):
     folder* (today): a card per session with agent, role chip, model, total, context size
     (`26k / 475k context` for Codex), last activity, and a stacked bar of input / cache read
     / cache write / output (`ansi4` / `ansi6` / `ansi3` / `ansi5`). *Today, all folders*: a
-    card each for Claude Code and Codex. *Codex limits · PLUS*: the 5h and weekly limits as
-    `% left` with a bar (accent, `ansi3` at 30 % or less, `blocked` at 10 % or less) and
-    `resets 14:42` / `resets 18:55 on 17 Nov`, marked `live` or `from logs`.
+    card each for Claude Code and Codex. Custom models get their own cards
+    (chip icon, their name, `model · no plan limits`). *Codex plan limits · PLUS*: the 5h and
+    weekly limits as `% left` with a bar (accent, `ansi3` at 30 % or less, `blocked` at 10 % or less) and
+    `resets 14:42` / `resets 18:55 on 17 Nov`, marked `live` or `from logs`; "Not available"
+    when Codex isn't signed in with a ChatGPT plan, and a note that custom models don't count
+    against these.
+- **Custom models dialog**, 600×640, centered. A list of models (name, a writer/reviewer tag
+  when in use, `model · host · $ENV_VAR | saved key | no key`, Edit, Delete) with Close and
+  **Add model**. The editor: provider presets (OpenRouter, OpenAI, Ollama, LM Studio,
+  LiteLLM, vLLM: fill the base URL and key mode), Base URL, Model (after a Test, the
+  endpoint's model ids show as chips to pick, filtered by what's typed), Name, API key mode
+  (Environment variable / Paste key (masked) / No key (local)), the Test result (one dot per
+  check: green, red, grey), and Test / Save, with what's missing written beside them.
 - **Status bar**, 28 px: Herdr's `workspace-status` (machine, branch, agents, palette key).
 
 ## How it behaves
@@ -97,6 +110,16 @@ and dark themes):
     it wrote itself).
   Empty flags (the default) start the agents exactly as Herdr does: `claude` and
   `codex --no-daemon`.
+- **Custom models**: Codex is started with
+  `-c model_providers.cw_<id>.{name,base_url,wire_api="responses",env_key}`,
+  `-c model_provider="cw_<id>"` and `-m <model>`, plus Codex's launch flags. A key goes in
+  through the environment only: a small `sh` loader reads the saved key file, or takes the
+  variable from Herdr's environment and, when it isn't there, from `$SHELL -ic`, then
+  `exec`s Codex; it says on stderr when the key is missing. **Test** reports: the key found or
+  not, `GET /models` (count, whether the model id is listed), `POST /responses` (works: "Codex
+  can use this model"), and when that fails `POST /chat/completions` ("Only Chat Completions
+  works here", with what to do). Deleting a model removes its key file and puts writer or
+  reviewer back to Claude / Codex if it was chosen.
 - **Usage** refreshes when shown and every 15 s; the bar's chip every 30 s. Codex's live
   limits are asked of Codex at most every 2 minutes (the refresh button forces it); between
   those, or when that fails, the latest limits recorded in Codex's logs are used.
@@ -117,9 +140,12 @@ and dark themes):
   `changes`, `reviews` (`coderwriter` `{role: "reviews"}`), `usage` (`coderwriter`
   `{role: "usage"}`)), `status` (`workspace-status`). Preview: `layouts/coderwriter.svg`.
 - `mods/coderwriter/`: one mod with roles: `bar` (`main.js`), `pick` (agent popup), `launch`
-  (`launch.js`), `reviews` (`reviews.js`), `usage` (`usage.js` + `usage.py`). `pair.js` is
+  (`launch.js`), `models` (`models.js` + `probe.py`; props `{new?, edit?}`), `reviews`
+  (`reviews.js`), `usage` (`usage.js` + `usage.py`). `pair.js` is
   the engine; pairs live in shared `coderwriter.pairs` keyed by tab, preferences in
-  `coderwriter.prefs` (writer, reviewer, max, auto, flags, menu), usage in
+  `coderwriter.prefs` (writer, reviewer, max, auto, flags, menu, models: `{id, name,
+  base_url, model, key: "env"|"file"|"none", env}`; a custom model's agent key is
+  `m:<id>`), usage in
   `coderwriter.usage`.
 - `mods/coderwriter-tabs/`: a clone of Herdr's `tabs` that always offers the panels the
   layout has and a show-sidebar button.
@@ -133,13 +159,16 @@ and dark themes):
 - Programs run: `hc run` (start the agents with labels `herdr.space`, `herdr.tab`,
   `coderwriter.role`, `coderwriter.pair`), `hc send --wait`, `hc wait`; `sh` (the git
   exclude line, listing `.coderwriter/`); `sleep`; `python3` (`usage.py`); `codex
-  app-server` (started by `usage.py` for `account/rateLimits/read`).
+  app-server` (started by `usage.py` for `account/rateLimits/read`); `python3` (`probe.py`,
+  the endpoint test); `chmod`, `rm` (key files).
 - Files read outside the mod: the pair folder's `.coderwriter/review-*.md`,
   `~/.claude/projects/**/*.jsonl` and `~/.codex/sessions/**/*.jsonl` (only files changed
   since midnight or since the pair started). Files written: the pair folder's
-  `.git/info/exclude`, and `programs.json` only when the + menu option is checked.
-- Network: none from the mods; Codex's own app-server contacts OpenAI to read the limits,
-  as `/status` does.
+  `.git/info/exclude`, `programs.json` only when the + menu option is checked, and
+  `~/.config/coderwriter/keys/<id>.key` for a pasted key.
+- Network: the endpoint test calls the base URL you enter (`/models`, one tiny `/responses`,
+  maybe `/chat/completions`); Codex's own app-server contacts OpenAI to read the limits, as
+  `/status` does. Nothing else.
 - Icons: Lucide-style 24×24 stroke SVGs in `mods/coderwriter/icons/`.
 
 ## Watch out
@@ -157,6 +186,14 @@ and dark themes):
   shows. Log limits are only as fresh as the last Codex turn; ask the app-server
   (`initialize`, `initialized`, then `account/rateLimits/read` over stdio JSON-RPC) for live
   ones. Claude Code's plan limits are not in its local logs.
+- Codex removed `wire_api = "chat"`: it only reaches providers through the Responses API
+  (`<base>/responses`). Chat-Completions-only endpoints need a proxy (LiteLLM) in front; the
+  Test says so instead of letting a pair fail.
+- Keep API keys out of argv, labels and shared state: they'd show in `hc ls`, process lists
+  and `shared.json`. Herdr-core's environment often lacks variables exported in shell rc
+  files, hence the `$SHELL -ic` fallback (works for bash, zsh and fish).
+- Codex logs record `model_provider` per session: split usage by it, and only take plan
+  limits from `openai` sessions.
 - `usage.py` is passed to `python3 -c` (read with `readTextFile`) so it also runs on a
   space's other machine; it needs `python3` there.
 - The mods' JS has no `setTimeout` and `toLocaleString` ignores options: format dates by
@@ -184,5 +221,8 @@ and dark themes):
 - Turning on Skip permissions makes the Launch chip red and the preview read
   `$ claude --dangerously-skip-permissions`; the next pair's writer starts with that flag;
   Reset to default goes back to `$ claude`.
+- A custom model on a Responses-capable endpoint passes Test, shows in both pickers, and a pair
+  started with it runs Codex against that base URL with the key in its environment (not in
+  `hc ls`); a Chat-Completions-only endpoint fails Test with the proxy hint.
 - The Usage panel lists the pair's sessions and today's totals, and its Codex limits match
   Codex's `/status` (% left and reset times).

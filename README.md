@@ -12,9 +12,13 @@ Changes panels.
 - Review →, ← Feedback, or **Auto** for hands-off rounds (1–10, default 3).
 - **Launch** flags per agent: skip permissions, permission modes, sandbox, web search or any
   flags of your own; empty means each agent's default. Optionally also used by the + menu.
+- **Custom models**: any OpenAI-compatible endpoint that serves the Responses API
+  (OpenRouter, OpenAI, Ollama, LM Studio, vLLM, LiteLLM, …) as writer or reviewer, run
+  through Codex. A Test button checks the endpoint before you use it.
 - **Reviews** panel: every round's verdict and findings, rendered.
-- **Usage** panel: tokens per session and per day from the agents' local logs, and Codex's
-  5h and weekly limits as `/status` shows them.
+- **Usage** panel: tokens per session and per day from the agents' local logs (custom models
+  counted separately), and Codex's 5h and weekly limits as `/status` shows them, where they
+  apply (ChatGPT-signed-in Codex; not API-key logins or custom models).
 - Herdr's spaces and agents sidebar, Files and Changes panels, and status bar.
 
 ## Install
@@ -45,5 +49,10 @@ removes it.
   contacts OpenAI the same way Codex's `/status` does.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the
   tab bar's + menu".
+- Custom models: **Test** sends `GET <base>/models` and one tiny `POST <base>/responses`
+  (and `/chat/completions` if that fails) to the endpoint you enter. A pasted API key is
+  saved only in `~/.config/coderwriter/keys/<id>.key` (folder 700, file 600), never in Herdr's
+  shared state, the layout or a command line; an environment-variable key is read from
+  Herdr's environment or, if missing there, from your interactive shell.
 
 See [RECIPE.md](RECIPE.md) for the full description, the build notes and what "done" looks like.
