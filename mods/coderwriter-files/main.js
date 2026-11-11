@@ -16,6 +16,29 @@ const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", 
 const PER_FOLDER = 500, TOTAL = 5000;
 const ICON = (name) => `mods/coderwriter-files/${name}.svg`;
 
+// Git states, most urgent first: a folder takes the most urgent state inside it.
+// Clean committed files keep the normal color; ignored ones (and everything in an
+// ignored folder) are dimmed.
+const STATES = {
+  conflict: { rank: 6, letter: "!", label: "Conflict", tip: "Merge conflict", color: (t) => t.blocked },
+  modified: { rank: 5, letter: "M", label: "Modified", tip: "Uncommitted changes, not staged", color: (t) => t.ansi3 },
+  deleted: { rank: 4, letter: "D", label: "Deleted", tip: "Deleted, not committed", color: (t) => t.ansi1 },
+  staged: { rank: 3, letter: "S", label: "Staged", tip: "Staged, ready to commit", color: (t) => t.ansi2 },
+  untracked: { rank: 2, letter: "N", label: "New", tip: "New file, not tracked by git", color: (t) => t.ansi6 },
+  ahead: { rank: 1, letter: "↑", label: "Unpushed", tip: "Committed, not pushed yet", color: (t) => t.ansi5 },
+  ignored: { rank: 0, letter: "", label: "Ignored", tip: "Ignored by git", color: (t) => t.dim },
+};
+
+// One `git status --porcelain=v1` XY code → a state.
+function stateOf(xy) {
+  if (xy === "??") return "untracked";
+  if (xy === "!!") return "ignored";
+  if (xy.includes("U") || xy === "AA" || xy === "DD") return "conflict";
+  if (xy.includes("D")) return "deleted";
+  if (xy[1] !== " ") return "modified";
+  return "staged";
+}
+
 // A name for a new or renamed entry: no empty parts, ".", ".." or NUL; "/" only where
 // nested folders are allowed (New folder makes a/b/c at once).
 function badName(name, nested) {
@@ -61,7 +84,7 @@ async function directory(path, on) {
 export default class Files extends View {
   init(_props, cx) {
     this.saved = new Map();
-    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
+    this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {}; this.folderMarks = {};
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
   }
@@ -95,7 +118,7 @@ export default class Files extends View {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.folderMarks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
     }
@@ -110,17 +133,31 @@ export default class Files extends View {
           await this.loadFolder(path, context);
         }
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
-        const marks = {};
+        const marks = {}, folderMarks = {};
         if (top?.code === 0) {
+          const base = top.stdout.trim();
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
-          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
+          const git = (args) => exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", ...args], { cwd, on }).catch(() => null);
+          // `matching` lists an ignored folder once (node_modules/), not every file in it.
+          const [status, ahead] = await Promise.all([
+            git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignored=matching"]),
+            git(["diff", "--name-only", "-z", "--no-renames", "@{upstream}...HEAD"]),
+          ]);
+          if (ahead?.code === 0) for (const path of ahead.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) marks[`${base}/${path}`] = "ahead";
           if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-            const xy = entry.slice(0, 2);
-            marks[`${top.stdout.trim()}/${entry.slice(3)}`] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
+            marks[`${base}/${entry.slice(3).replace(/\/$/, "")}`] = stateOf(entry.slice(0, 2));
+          }
+          // Each folder shows the most urgent state inside it (ignored files don't count).
+          for (const [path, state] of Object.entries(marks)) {
+            if (state === "ignored") continue;
+            for (let dir = path.slice(0, path.lastIndexOf("/")); dir.length > base.length; dir = dir.slice(0, dir.lastIndexOf("/"))) {
+              if ((STATES[folderMarks[dir]]?.rank ?? -1) >= STATES[state].rank) break;
+              folderMarks[dir] = state;
+            }
           }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.folderMarks = folderMarks; this.error = null; this.watch(cwd, cx);
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
     });
@@ -249,38 +286,61 @@ export default class Files extends View {
       .child(svg(ICON(icon)).size(13));
   }
 
-  rows(prefix, depth, out, t) {
+  // The git state shown for a row: an ignored folder dims everything in it.
+  stateFor(path, dir, ignored) {
+    if (ignored) return "ignored";
+    const abs = `${this.root}/${path}`, own = this.marks[abs];
+    if (!dir) return own ?? null;
+    const inside = this.folderMarks[abs];
+    return own === "ignored" ? own : (STATES[inside]?.rank ?? -1) > (STATES[own]?.rank ?? -1) ? inside : own ?? null;
+  }
+
+  // The states present in the shown tree, as a key under it.
+  legend(t) {
+    const present = new Set([...Object.values(this.marks), ...Object.values(this.folderMarks)]);
+    const shown = Object.keys(STATES).filter((s) => present.has(s));
+    if (!shown.length) return null;
+    return h_flex().id("files-legend").flex_none().flex_wrap().gap_x(10).gap_y(2).px(10).py(6).border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
+      .children(shown.map((s) => h_flex().id(`legend-${s}`).gap(4).items_center().tooltip(STATES[s].tip)
+        .child(div().size(7).rounded(4).bg(STATES[s].color(t)))
+        .child(STATES[s].label)));
+  }
+
+  rows(prefix, depth, out, t, ignored = false) {
     if (out.length >= TOTAL || depth > 40) return out;
     const edit = this.edit;
     if (edit && edit.mode !== "rename" && edit.parent === prefix) out.push(...this.editRow(depth, t, null));
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path);
+      const state = this.stateFor(path, entry.dir, ignored), look = state ? STATES[state] : null, color = look?.color(t);
       if (edit?.mode === "rename" && edit.parent === prefix && edit.name === entry.name) {
         out.push(...this.editRow(depth, t, entry));
-        if (entry.dir && open) this.rows(path, depth + 1, out, t);
+        if (entry.dir && open) this.rows(path, depth + 1, out, t, state === "ignored");
         continue;
       }
       const hovered = this.hover === path && !edit;
       out.push(h_flex().id(`file-${path}`).h(28).flex_none().pl(8 + depth * 18).pr(8).gap(7).items_center().rounded(7).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .child(entry.dir ? svg(`mods/coderwriter-files/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-        .child(svg(`mods/coderwriter-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
+        .child(svg(`mods/coderwriter-files/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(color ?? t.muted))
         .on_hover((h, cx) => { if (h) this.hover = path; else if (this.hover === path) this.hover = null; cx.notify(); })
-        .child(div().flex_1().min_w(0).truncate().child(entry.name))
+        .child(div().flex_1().min_w(0).truncate().text_color(color ?? t.foreground).child(entry.name))
         .when(hovered && entry.dir, el => el
           .child(this.action(t, `nf-${path}`, "file-plus", "New file", (cx) => this.startEdit("touch", path, "", cx)))
           .child(this.action(t, `nd-${path}`, "folder-plus", "New folder", (cx) => this.startEdit("mkdir", path, "", cx))))
         .when(hovered, el => el.child(this.action(t, `rn-${path}`, "pencil", "Rename", (cx) => this.startEdit("rename", prefix, entry.name, cx))))
-        .when(Boolean(mark) && !hovered, el => el.child(div().text_size(11).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark))));
-      if (entry.dir && open) this.rows(path, depth + 1, out, t);
+        .when(Boolean(look) && state !== "ignored" && !hovered, el => el.child(entry.dir
+          ? div().id(`mark-${path}`).size(6).mr(3).flex_none().rounded(3).bg(color).tooltip(`Contains: ${look.tip.toLowerCase()}`)
+          : div().id(`mark-${path}`).w(12).flex_none().text_center().text_size(11).font_semibold().text_color(color).tooltip(look.tip).child(look.letter))));
+      if (entry.dir && open) this.rows(path, depth + 1, out, t, state === "ignored");
     }
     return out;
   }
 
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
-    const t = theme();
+    const t = theme(), legend = this.file ? null : this.legend(t);
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
@@ -291,7 +351,8 @@ export default class Files extends View {
           .child(this.action(t, "root-new-folder", "folder-plus", "New folder here", (cx) => this.startEdit("mkdir", "", "", cx)))))
       .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || (!this.entries.get("")?.length && !(this.edit && this.edit.parent === "")), el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
+        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))))
+        .when(Boolean(legend), el => el.child(legend)))
       .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
   }
 }

@@ -31,7 +31,9 @@ Changes panels.
   weekly limits (all models and per model) as `/usage` shows them, and Codex's 5h and weekly
   limits as `/status` shows them. A bar chip shows `Claude 35% used · Codex 64% left`.
 - **Files** panel with **New folder** (nested `a/b/c` too), **New file** and **Rename**, inline in
-  the tree; it never overwrites an existing name.
+  the tree; it never overwrites an existing name. Files and folders are colored by git
+  state: modified, staged, new, deleted, conflicted, committed but not pushed, and ignored
+  (dimmed), with a key under the tree.
 - Herdr's spaces and agents sidebar, Changes panel and status bar.
 
 ## Install

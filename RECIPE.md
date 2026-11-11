@@ -58,7 +58,13 @@ and dark themes):
   - **Files**: Herdr's file browser for the focused pane's folder, plus creating and
     renaming. The header has New file and New folder (for the folder shown); hovering a row
     shows New file / New folder (folders) and Rename, 20 px icon buttons that replace the
-    git mark while hovered. Editing happens in the tree: a 28 px row on the `selected`
+    git mark while hovered. Names and icons are colored by git state, with a letter
+    on the right (a dot on folders, which take the most urgent state inside them): conflict
+    `!` (`blocked`), modified, not staged `M` (`ansi3`), deleted `D` (`ansi1`), staged `S`
+    (`ansi2`), new, untracked `N` (`ansi6`), committed but not pushed `↑` (`ansi5`, when the
+    branch has an upstream). Clean committed files keep the normal color; ignored ones (and
+    everything in an ignored folder) are `dim`. A key under the tree lists the states
+    present, each with a tooltip. Editing happens in the tree: a 28 px row on the `selected`
     background with an inline input (accent border, `blocked` when there's an error, the error
     on the line below); Rename preselects the name without its extension.
   - **Changes**: Herdr's own panel.
