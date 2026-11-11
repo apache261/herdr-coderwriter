@@ -17,8 +17,9 @@ Changes panels.
   through Codex. A Test button checks the endpoint before you use it.
 - **Reviews** panel: every round's verdict and findings, rendered.
 - **Usage** panel: tokens per session and per day from the agents' local logs (custom models
-  counted separately), and Codex's 5h and weekly limits as `/status` shows them, where they
-  apply (ChatGPT-signed-in Codex; not API-key logins or custom models).
+  counted separately), plus each plan's limits where they apply: Claude's current session and
+  weekly limits (all models and per model) as `/usage` shows them, and Codex's 5h and weekly
+  limits as `/status` shows them. A bar chip shows `Claude 35% used · Codex 64% left`.
 - **Files** panel with **New folder** (nested `a/b/c` too), **New file** and **Rename**, inline in
   the tree; it never overwrites an existing name.
 - Herdr's spaces and agents sidebar, Changes panel and status bar.
@@ -47,8 +48,11 @@ removes it.
   `.git/info/exclude`.
 - The Usage panel runs `python3` to read `~/.claude/projects/**/*.jsonl` and
   `~/.codex/sessions/**/*.jsonl` (read only, files changed today or since the pair started),
-  and starts `codex app-server` at most every 2 minutes to read the live plan limits, which
-  contacts OpenAI the same way Codex's `/status` does.
+  and, at most every 2 minutes, reads the live plan limits the way the agents do: Claude Code's
+  `/usage` endpoint (`api.anthropic.com/api/oauth/usage`) with Claude Code's own sign-in from
+  `~/.claude/.credentials.json` (macOS: the keychain), read only and never refreshed or sent
+  anywhere else; and `codex app-server`, which contacts OpenAI as Codex's `/status` does.
+  Each is skipped when that agent isn't installed or isn't signed in with a plan.
 - The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
   rename something, in the folder you're browsing.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the

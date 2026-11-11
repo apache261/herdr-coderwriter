@@ -229,11 +229,70 @@ def codex_live():
     finally:
         p.kill()
 
+# Claude Code's plan limits, as its /usage shows them: the usage endpoint, asked with
+# Claude Code's own sign-in (read only: never refreshed or written here). Only when
+# Claude Code is installed and signed in with a Claude plan.
+def claude_live():
+    import shutil, subprocess, urllib.error, urllib.request
+    if not shutil.which("claude"):
+        return {"status": "not_installed"}
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
+    creds = None
+    try:
+        with open(os.path.join(cfg, ".credentials.json"), "r", encoding="utf-8") as f:
+            creds = json.load(f)
+    except (OSError, ValueError):
+        if sys.platform == "darwin":  # macOS keeps it in the login keychain
+            try:
+                r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                                   capture_output=True, text=True, timeout=10)
+                creds = json.loads(r.stdout) if r.returncode == 0 else None
+            except Exception:
+                creds = None
+    oauth = (creds or {}).get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    if not token:
+        return {"status": "no_plan"}  # signed out, or an API key (billed per token)
+    plan = oauth.get("subscriptionType")
+    if (oauth.get("expiresAt") or 0) and oauth["expiresAt"] < now * 1000:
+        return {"status": "expired", "plan": plan}
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
+        "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json", "User-Agent": "coderwriter-usage"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        return {"status": "expired" if e.code in (401, 403) else "error", "plan": plan, "error": "HTTP %d" % e.code}
+    names = {"session": "Current session", "weekly_all": "All models"}
+    out = []
+    for l in data.get("limits") or []:
+        if l.get("percent") is None:
+            continue
+        scope = l.get("scope") or {}
+        label = names.get(l.get("kind")) or ((scope.get("model") or {}).get("display_name")) or (scope.get("surface") or "") or l.get("kind")
+        out.append({"label": label, "group": l.get("group"), "used": l.get("percent"), "severity": l.get("severity"),
+                    "resets_at": (ms(l.get("resets_at") or "") or 0) // 1000 or None, "active": l.get("is_active")})
+    if not out:  # older shape: five_hour / seven_day / seven_day_<model>
+        for key, label, group in (("five_hour", "Current session", "session"), ("seven_day", "All models", "weekly"),
+                                  ("seven_day_opus", "Opus", "weekly"), ("seven_day_sonnet", "Sonnet", "weekly")):
+            w = data.get(key)
+            if isinstance(w, dict) and w.get("utilization") is not None:
+                out.append({"label": label, "group": group, "used": w["utilization"], "severity": None,
+                            "resets_at": (ms(w.get("resets_at") or "") or 0) // 1000 or None, "active": None})
+    return {"status": "ok", "plan": plan, "limits": out, "at": int(time.time() * 1000), "source": "live"}
+
 if live:
+    try:
+        cl = claude_live()
+        if cl:
+            result["limits"] = {**(result["limits"] or {}), "claude": cl}
+    except Exception as err:
+        result["errors"].append("claude limits: %s" % err)
     try:
         got = codex_live()
         if got:
-            result["limits"] = {"codex": got}
+            result["limits"] = {**(result["limits"] or {}), "codex": got}
     except Exception as err:
         result["errors"].append("codex limits: %s" % err)
 json.dump(result, sys.stdout)

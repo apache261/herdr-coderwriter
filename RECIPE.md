@@ -38,8 +38,8 @@ and dark themes):
   - task input (fills the remaining width, accent border while focused);
   - rounds stepper `– 3 rounds +` (1 to 10) and an **Auto** switch;
   - **Start** (solid, play icon);
-  - usage chip: gauge icon, today's tokens (`29M today`) and `Codex 64% left`, red when 20 %
-    or less is left.
+  - usage chip: gauge icon, today's tokens (`29M today`), `Claude 35% used` (the current
+    session; red at 80 %) and `Codex 64% left` (red at 20 % or less).
   - In a pair's tab the stepper and switch move into a pair group after a separator:
     spinner while a job runs, the pair's note ("Round 2: reviewing"), a verdict pill
     (Approved / Changes requested / No review file / No verdict), `round/max`, **Review →**,
@@ -68,7 +68,12 @@ and dark themes):
     (`26k / 475k context` for Codex), last activity, and a stacked bar of input / cache read
     / cache write / output (`ansi4` / `ansi6` / `ansi3` / `ansi5`). *Today, all folders*: a
     card each for Claude Code and Codex. Custom models get their own cards
-    (chip icon, their name, `model · no plan limits`). *Codex plan limits · PLUS*: the 5h and
+    (chip icon, their name, `model · no plan limits`). *Claude plan limits · TEAM*
+    (only when Claude Code is installed and signed in with a plan): rows as Claude's `/usage`
+    shows them, `Current session`, `Weekly · All models`, `Weekly · <model>` (e.g. Fable),
+    each `34% used` with `Resets 3:10 PM` / `Resets Tue 10:00 PM` and a bar (`ansi4`, `ansi3`
+    at 70 %, `blocked` at 90 %); marked `live` or `last known`, with a note when the sign-in
+    has expired or there's no plan. *Codex plan limits · PLUS*: the 5h and
     weekly limits as `% left` with a bar (accent, `ansi3` at 30 % or less, `blocked` at 10 % or less) and
     `resets 14:42` / `resets 18:55 on 17 Nov`, marked `live` or `from logs`; "Not available"
     when Codex isn't signed in with a ChatGPT plan, and a note that custom models don't count
@@ -181,7 +186,13 @@ and dark themes):
   since midnight or since the pair started). Files written: the pair folder's
   `.git/info/exclude`, `programs.json` only when the + menu option is checked, and
   `~/.config/coderwriter/keys/<id>.key` for a pasted key.
-- Network: the endpoint test calls the base URL you enter (`/models`, one tiny `/responses`,
+- Claude's limits: `usage.py` reads Claude Code's OAuth access token
+  (`~/.claude/.credentials.json`, `$CLAUDE_CONFIG_DIR`, or the macOS keychain item
+  `Claude Code-credentials`) and calls `GET https://api.anthropic.com/api/oauth/usage` with
+  `anthropic-beta: oauth-2025-04-20`; it uses the response's `limits` list (`session`,
+  `weekly_all`, `weekly_scoped` with `scope.model.display_name`), falling back to
+  `five_hour` / `seven_day` / `seven_day_<model>`.
+- Network: Claude's usage endpoint (above); the endpoint test calls the base URL you enter (`/models`, one tiny `/responses`,
   maybe `/chat/completions`); Codex's own app-server contacts OpenAI to read the limits, as
   `/status` does. Nothing else.
 - Icons: Lucide-style 24×24 stroke SVGs in `mods/coderwriter/icons/`.
@@ -210,6 +221,11 @@ and dark themes):
 - Keep API keys out of argv, labels and shared state: they'd show in `hc ls`, process lists
   and `shared.json`. Herdr-core's environment often lacks variables exported in shell rc
   files, hence the `$SHELL -ic` fallback (works for bash, zsh and fish).
+- Claude's plan limits aren't in its local logs; only the usage endpoint has them. Never
+  refresh the OAuth token yourself: that rotates Claude Code's refresh token and can sign it
+  out. An expired token (`expiresAt` passed, or 401) means "open Claude Code once"; keep the
+  last reading meanwhile. Claude's `/usage` says `% used`, Codex's `/status` `% left`: show
+  each as its own tool does.
 - Codex logs record `model_provider` per session: split usage by it, and only take plan
   limits from `openai` sessions.
 - `usage.py` is passed to `python3 -c` (read with `readTextFile`) so it also runs on a
@@ -245,4 +261,5 @@ and dark themes):
   started with it runs Codex against that base URL with the key in its environment (not in
   `hc ls`); a Chat-Completions-only endpoint fails Test with the proxy hint.
 - The Usage panel lists the pair's sessions and today's totals, and its Codex limits match
-  Codex's `/status` (% left and reset times).
+  Codex's `/status` (% left and reset times), and its Claude limits match Claude Code's
+  `/usage` (session, weekly all models, weekly per model; % used and reset times).

@@ -45,6 +45,12 @@ export async function refreshUsage(force = false) {
     // A log snapshot never replaces a newer live reading.
     const got = data.limits?.codex;
     if (prevLive && (!got || (got.source !== "live" && (got.at ?? 0) <= prevLive.at))) data.limits = { ...(data.limits ?? {}), codex: prevLive };
+    // Claude's limits only come live: keep the last good reading between live scans,
+    // and through an expired sign-in (marked as such).
+    const prevClaude = last?.limits?.claude;
+    const cl = data.limits?.claude;
+    if (!cl && prevClaude) data.limits = { ...(data.limits ?? {}), claude: prevClaude };
+    else if (cl && cl.status !== "ok" && prevClaude?.limits) data.limits = { ...(data.limits ?? {}), claude: { ...prevClaude, status: cl.status } };
     setShared(USAGE, { ...data, folder, since_req: since, on, at: Date.now(), error: null });
   } catch (e) {
     setShared(USAGE, { ...(last ?? {}), folder, since_req: since, on, at: Date.now(), error: String(e.message ?? e) });
@@ -78,6 +84,15 @@ function resetAt(sec) {
   if (d.toDateString() === now.toDateString()) return hm;
   return `${hm} on ${d.getDate()} ${"Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ")[d.getMonth()]}`;
 }
+// Claude Code's /usage style: "Resets 3:10 PM" today, "Resets Tue 10:00 PM" later.
+function claudeReset(sec) {
+  if (!sec) return "";
+  const d = new Date(Math.round(sec / 60) * 60000), now = new Date();
+  const h = d.getHours(), hm = `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+  if (d.toDateString() === now.toDateString()) return `Resets ${hm}`;
+  const day = "Sun Mon Tue Wed Thu Fri Sat".split(" ")[d.getDay()];
+  return d - now < 7 * 86400000 ? `Resets ${day} ${hm}` : `Resets ${day} ${d.getDate()} ${"Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ")[d.getMonth()]} ${hm}`;
+}
 const left = (w) => Math.max(0, Math.min(100, 100 - (w?.used ?? 0)));
 const windowName = (min) => (min === 300 ? "5h" : min === 10080 ? "Weekly" : min ? `${Math.round(min / 60)}h` : "");
 
@@ -99,6 +114,8 @@ export function usageChip(t) {
   const today = todayTotal(u);
   const prim = u?.limits?.codex?.primary;
   const hot = prim && left(prim) <= 20;
+  const session = u?.limits?.claude?.status === "ok" ? u.limits.claude.limits?.find((l) => l.group === "session") : null;
+  const claudeHot = session && session.used >= 80;
   return h_flex().id("usage-chip").h(28).px(9).gap(6).items_center().flex_none().rounded(7)
     .border_1().border_color(t.border).bg(t.background).text_size(12.3).text_color(t.muted)
     .hover((s) => s.bg(t.hover)).cursor_pointer()
@@ -107,6 +124,8 @@ export function usageChip(t) {
     .child(svg(I("gauge")).size(13).text_color(t.dim))
     .child(div().text_color(t.foreground).child(u ? fmt(today) : "…"))
     .child(div().text_color(t.dim).child("today"))
+    .when(session?.used != null, (el) => el.child(div().w(1).h(14).bg(t.border))
+      .child(div().text_color(claudeHot ? t.blocked : t.muted).child(`Claude ${Math.round(session.used)}% used`)))
     .when(prim?.used != null, (el) => el.child(div().w(1).h(14).bg(t.border))
       .child(div().text_color(hot ? t.blocked : t.muted).child(`Codex ${Math.round(left(prim))}% left`)));
 }
@@ -198,6 +217,23 @@ export class Usage {
       ]);
     };
 
+    // Claude Code's limits as /usage shows them: "% used", grouped session then weekly.
+    const claude = u?.limits?.claude ?? null;
+    const claudeNote = (c) => !c ? "" : c.status === "expired" ? "Claude Code's sign-in has expired: open Claude Code once to refresh it."
+      : c.status === "no_plan" ? "Not available: Claude Code isn't signed in with a Claude plan (API keys are billed per token)."
+      : c.status === "error" ? `Couldn't read Claude's limits (${c.error ?? "error"}).` : "";
+    const claudeRow = (l) => {
+      if (l?.used == null) return null;
+      const pct = Math.max(0, Math.min(100, l.used));
+      const c = l.severity && l.severity !== "normal" ? (pct >= 90 ? t.blocked : t.ansi3) : pct >= 90 ? t.blocked : pct >= 70 ? t.ansi3 : t.ansi4;
+      return v_flex().gap(4)
+        .child(h_flex().text_size(11.8).text_color(t.muted)
+          .child(div().flex_1().child(l.group === "weekly" && l.label !== "All models" ? `Weekly · ${l.label}` : l.group === "weekly" ? "Weekly · All models" : l.label))
+          .child(div().text_color(t.foreground).child(`${Math.round(pct)}% used`))
+          .child(div().pl(6).text_color(t.dim).child(claudeReset(l.resets_at))))
+        .child(div().h(6).w_full().rounded(3).bg(t.border).child(div().h_full().rounded(3).bg(c).w(`${pct}%`)));
+    };
+
     const scopeLabel = sc.pair ? "This pair (since it started)" : "This folder (today)";
     const codexLimits = u?.limits?.codex;
     const hasLimits = Boolean(codexLimits?.primary?.used != null || codexLimits?.secondary?.used != null);
@@ -223,6 +259,14 @@ export class Usage {
           .child(agentRow("claude", u?.today?.claude))
           .child(agentRow("codex", u?.today?.codex))
           .children(providers.map(([prov, tok]) => agentRow("codex", tok, prov)))
+          .when(Boolean(claude && claude.status !== "not_installed"), (el) => el
+            .child(this.title(t, `CLAUDE PLAN LIMITS${claude?.plan ? " · " + String(claude.plan).toUpperCase() : ""}`,
+              claude?.at ? `${claude.status === "ok" ? "live" : "last known"} · ${ago(claude.at)}` : null))
+            .child(this.card(t, [
+              ...(claude?.limits?.length ? claude.limits.map(claudeRow).filter(Boolean)
+                : [div().text_size(11.8).text_color(t.muted).child(claudeNote(claude) || "No limits reported")]),
+              ...(claude?.limits?.length && claudeNote(claude) ? [div().text_size(11).text_color(t.blocked).child(claudeNote(claude))] : []),
+            ])))
           .child(this.title(t, `CODEX PLAN LIMITS${codexLimits?.plan ? " · " + String(codexLimits.plan).toUpperCase() : ""}`,
             codexLimits?.at ? `${codexLimits.source === "live" ? "live" : "from logs"} · ${ago(codexLimits.at)}` : null))
           .child(this.card(t, [
@@ -232,6 +276,6 @@ export class Usage {
               ? [div().text_size(11).text_color(t.dim).child("Custom models don't count against these: their provider bills them.")] : []),
           ]))
           .child(div().px(2).pt(2).text_size(10.8).text_color(t.dim)
-            .child("Totals include cached input, which most plans bill at a discount. Claude plan limits aren't in its local logs; use /usage in Claude Code."))));
+            .child("Totals include cached input, which most plans bill at a discount. Plan limits are read live from each agent's own sign-in (Claude's /usage, Codex's /status) at most every 2 minutes."))));
   }
 }
