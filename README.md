@@ -19,7 +19,9 @@ Changes panels.
 - **Usage** panel: tokens per session and per day from the agents' local logs (custom models
   counted separately), and Codex's 5h and weekly limits as `/status` shows them, where they
   apply (ChatGPT-signed-in Codex; not API-key logins or custom models).
-- Herdr's spaces and agents sidebar, Files and Changes panels, and status bar.
+- **Files** panel with **New folder** (nested `a/b/c` too), **New file** and **Rename**, inline in
+  the tree; it never overwrites an existing name.
+- Herdr's spaces and agents sidebar, Changes panel and status bar.
 
 ## Install
 
@@ -29,7 +31,7 @@ Needs Herdr with Claude Code and/or Codex installed, and `python3` for the Usage
 git clone https://github.com/apache261/herdr-coderwriter
 cd herdr-coderwriter
 cp layouts/coderwriter.json layouts/coderwriter.svg ~/.config/herdr-app/layouts/
-cp -r mods/coderwriter mods/coderwriter-tabs mods/coderwriter-pane ~/.config/herdr-app/mods/
+cp -r mods/coderwriter mods/coderwriter-tabs mods/coderwriter-pane mods/coderwriter-files ~/.config/herdr-app/mods/
 herdr-app do layout.switch '{"name":"coderwriter"}'
 ```
 
@@ -47,6 +49,8 @@ removes it.
   `~/.codex/sessions/**/*.jsonl` (read only, files changed today or since the pair started),
   and starts `codex app-server` at most every 2 minutes to read the live plan limits, which
   contacts OpenAI the same way Codex's `/status` does.
+- The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
+  rename something, in the folder you're browsing.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the
   tab bar's + menu".
 - Custom models: **Test** sends `GET <base>/models` and one tiny `POST <base>/responses`

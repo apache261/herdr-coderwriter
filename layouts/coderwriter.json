@@ -98,7 +98,7 @@
                   "type": "stack",
                   "active": "reviews",
                   "children": [
-                    { "id": "files", "type": "block", "content": { "mod": "files" } },
+                    { "id": "files", "type": "block", "content": { "mod": "coderwriter-files" } },
                     { "id": "changes", "type": "block", "content": { "mod": "changes" } },
                     { "id": "reviews", "type": "block", "content": { "mod": "coderwriter", "props": { "role": "reviews" } } },
                     { "id": "usage", "type": "block", "content": { "mod": "coderwriter", "props": { "role": "usage" } } }

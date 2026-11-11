@@ -52,7 +52,13 @@ and dark themes):
   like Herdr's own header. Split, zoom and close buttons appear on hover.
 - **Side panel**, 380 px (280–900, resizable), hidden until a toggle opens it. A stack of
   four:
-  - **Files** and **Changes**: Herdr's own panels.
+  - **Files**: Herdr's file browser for the focused pane's folder, plus creating and
+    renaming. The header has New file and New folder (for the folder shown); hovering a row
+    shows New file / New folder (folders) and Rename, 20 px icon buttons that replace the
+    git mark while hovered. Editing happens in the tree: a 28 px row on the `selected`
+    background with an inline input (accent border, `blocked` when there's an error, the error
+    on the line below); Rename preselects the name without its extension.
+  - **Changes**: Herdr's own panel.
   - **Reviews**: the reviewer's rounds for this pair (or the focused folder): writer →
     reviewer and `round n/max`, the pair's note, one chip per round with a green (approved)
     or red (changes requested) dot, then the selected round's review rendered as Markdown,
@@ -124,6 +130,11 @@ and dark themes):
   limits are asked of Codex at most every 2 minutes (the refresh button forces it); between
   those, or when that fails, the latest limits recorded in Codex's logs are used.
 - **Reviews** re-reads `.coderwriter/` every 5 s; clicking a round chip shows it.
+- Files: Enter creates or renames, Esc or clicking away cancels. New folder accepts `a/b/c`
+  (made at once); file names and renames can't contain `/`; `.`, `..` and empty parts are
+  refused. An existing name is never replaced: the error says "<name> already exists". A
+  new entry's folder opens; a renamed open folder stays open, and a previewed file follows
+  its new name.
 - Panel toggles open the panel on that view, or close it if it is already showing; the
   choice is remembered per space.
 - Keys (optional, add to `keys.json`): `coderwriter.start`, `coderwriter.task` (focus the
@@ -136,7 +147,8 @@ and dark themes):
   padding 14×12) → `sidebar` column (`brand`, `sidebar-lists` with `spaces` + `agents`,
   `sidebar-footer`) and `work` column → `tabs` (`coderwriter-tabs`), `cw-bar`
   (`coderwriter`, props `{role: "bar"}`), `work-body` row (`main`: `{tab: "active"}` with the
-  pane frame and `coderwriter-pane` header; `panel` column → `panel-body` stack of `files`,
+  pane frame and `coderwriter-pane` header; `panel` column → `panel-body` stack of `files`
+  (`coderwriter-files`),
   `changes`, `reviews` (`coderwriter` `{role: "reviews"}`), `usage` (`coderwriter`
   `{role: "usage"}`)), `status` (`workspace-status`). Preview: `layouts/coderwriter.svg`.
 - `mods/coderwriter/`: one mod with roles: `bar` (`main.js`), `pick` (agent popup), `launch`
@@ -150,7 +162,10 @@ and dark themes):
 - `mods/coderwriter-tabs/`: a clone of Herdr's `tabs` that always offers the panels the
   layout has and a show-sidebar button.
 - `mods/coderwriter-pane/`: a clone of Herdr's `pane` header with role chips and badges.
-- Shipped mods used as they are: `workspace-chrome`, `spaces`, `agents`, `files`, `changes`,
+- `mods/coderwriter-files/`: a clone of Herdr's `files` with create and rename; operations
+  are `sh -c` scripts (`cd`, an exists check, then `mkdir -p --`, `set -C; : >`, `mv --`) run
+  with the panel's `on`, so they work on a space's other machine.
+- Shipped mods used as they are: `workspace-chrome`, `spaces`, `agents`, `changes`,
   `workspace-status`, `new-menu`, `menu`.
 - `herdr`: `spaces`, `panes`, `focused`, `terminals`, `knownAgents`, `shared`/`setShared`,
   `openOverlay`/`closeOverlay`, `pickFolder`, `notify`, `exec`, `readTextFile`,
@@ -186,6 +201,9 @@ and dark themes):
   shows. Log limits are only as fresh as the last Codex turn; ask the app-server
   (`initialize`, `initialized`, then `account/rateLimits/read` over stdio JSON-RPC) for live
   ones. Claude Code's plan limits are not in its local logs.
+- Herdr's `prompt` dialog hands its text to an app command, not back to a panel, so the
+  Files panel edits names inline; an `InputState` blur cancels, so focus it again after the
+  row appears (`cx.timer.after`). On local Windows, create/rename is off (no `sh`).
 - Codex removed `wire_api = "chat"`: it only reaches providers through the Responses API
   (`<base>/responses`). Chat-Completions-only endpoints need a proxy (LiteLLM) in front; the
   Test says so instead of letting a pair fail.
@@ -221,6 +239,8 @@ and dark themes):
 - Turning on Skip permissions makes the Launch chip red and the preview read
   `$ claude --dangerously-skip-permissions`; the next pair's writer starts with that flag;
   Reset to default goes back to `$ claude`.
+- In Files, New folder `x/y` creates both, Rename onto an existing name shows "already
+  exists" and changes nothing, and Esc leaves the tree as it was.
 - A custom model on a Responses-capable endpoint passes Test, shows in both pickers, and a pair
   started with it runs Codex against that base URL with the key in its environment (not in
   `hc ls`); a Chat-Completions-only endpoint fails Test with the proxy hint.
