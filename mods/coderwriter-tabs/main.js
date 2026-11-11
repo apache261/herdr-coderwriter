@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, props } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -83,7 +83,9 @@ export default class Tabs extends View {
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
-    const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
+    // props.controls === false: another row on top has the window buttons and the macOS lights.
+    const controls = props()?.controls !== false;
+    const lightsPadding = controls && w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
@@ -115,7 +117,7 @@ export default class Tabs extends View {
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(enabled.includes("reviews"), el => el.child(panelButton("reviews", "Reviews", "mods/coderwriter/icons/search.svg")))
       .when(enabled.includes("usage"), el => el.child(panelButton("usage", "Usage", "mods/coderwriter/icons/gauge.svg")))
-      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/coderwriter-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
+      .when(controls && w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/coderwriter-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/coderwriter-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/coderwriter-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
   }

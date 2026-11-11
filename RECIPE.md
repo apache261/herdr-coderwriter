@@ -17,14 +17,11 @@ Left to right, top to bottom (sizes at zoom 1, colors are theme names so it foll
 and dark themes):
 
 - **Sidebar**, 260 px, `chrome` background, 1 px `border` divider on its right. Herdr's
-  `workspace-chrome` header (42 px: logo, search, collapse), then `spaces` and `agents`
+  `workspace-chrome` header (46 px, level with the coderwriter bar: logo, search, collapse), then `spaces` and `agents`
   sharing the height equally (90 px minimum each), then the `workspace-chrome` footer
   (69 px: Settings, Add machine). Folding it narrows it to a 44 px rail.
-- **Tab bar**, 42 px, drags the window. Tabs as pills, `+` (new terminal or agent), then
-  four panel toggles: **Files**, **Changes**, **Reviews**, **Usage** (the open one gets the
-  `selected` background), then window buttons where the system draws none. When the
-  sidebar is hidden, a sidebar button appears at its left edge.
-- **coderwriter bar**, 46 px, `chrome` background, bottom border. Left to right:
+- **coderwriter bar**, 46 px, the window's top row: drags the window (double-click maximizes),
+  `chrome` background, bottom border. Left to right:
   - pen icon (`ansi4`) and **coderwriter** in semibold 12.8 px;
   - **Writer** chip (pen, `ansi4`) and **Reviewer** chip (magnifier, `ansi5`), each with
     the agent's icon and name and a chevron; a click opens a 250 px popup listing Claude
@@ -44,6 +41,12 @@ and dark themes):
     spinner while a job runs, the pair's note ("Round 2: reviewing"), a verdict pill
     (Approved / Changes requested / No review file / No verdict), `round/max`, **Review →**,
     **← Feedback**, **Auto**, **Stop**.
+  - window buttons (−, □, ×) at the right end where the system draws none (Linux, Windows);
+    on macOS it leaves room for the traffic lights when the sidebar is too narrow.
+- **Tab bar**, 40 px, under the coderwriter bar. Tabs as pills, `+` (new terminal or agent),
+  then four panel toggles: **Files**, **Changes**, **Reviews**, **Usage** (the open one gets
+  the `selected` background). When the sidebar is hidden, a sidebar button appears at its
+  left edge.
 - **Panes**, 8 px padding and gap, cards with 10 px radius, 1 px `border` (accent when
   focused), framed even when alone. Each has a 32 px header: a writer or reviewer pane gets a
   solid role chip (`WRITER` in `ansi4` / `REVIEWER` in `ansi5`), a header tinted with that
@@ -150,8 +153,9 @@ and dark themes):
 
 - `layouts/coderwriter.json`: root `row` (`titlebar: none`, `canvas` background, terminal
   padding 14×12) → `sidebar` column (`brand`, `sidebar-lists` with `spaces` + `agents`,
-  `sidebar-footer`) and `work` column → `tabs` (`coderwriter-tabs`), `cw-bar`
-  (`coderwriter`, props `{role: "bar"}`), `work-body` row (`main`: `{tab: "active"}` with the
+  `sidebar-footer`) and `work` column → `cw-bar` (`coderwriter`, props
+  `{role: "bar", controls: true}`, `window_drag`), `tabs` (`coderwriter-tabs`, props
+  `{controls: false}`), `work-body` row (`main`: `{tab: "active"}` with the
   pane frame and `coderwriter-pane` header; `panel` column → `panel-body` stack of `files`
   (`coderwriter-files`),
   `changes`, `reviews` (`coderwriter` `{role: "reviews"}`), `usage` (`coderwriter`
@@ -165,7 +169,8 @@ and dark themes):
   `m:<id>`), usage in
   `coderwriter.usage`.
 - `mods/coderwriter-tabs/`: a clone of Herdr's `tabs` that always offers the panels the
-  layout has and a show-sidebar button.
+  layout has and a show-sidebar button; `controls: false` leaves the window buttons and the
+  macOS traffic-light room to the row above.
 - `mods/coderwriter-pane/`: a clone of Herdr's `pane` header with role chips and badges.
 - `mods/coderwriter-files/`: a clone of Herdr's `files` with create and rename; operations
   are `sh -c` scripts (`cd`, an exists check, then `mkdir -p --`, `set -C; : >`, `mv --`) run

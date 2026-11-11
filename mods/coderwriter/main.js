@@ -5,7 +5,7 @@
 // props.which = "writer" | "reviewer").
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { theme, spaces, panes, focused, knownAgents, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand } from "herdr";
+import { theme, spaces, panes, focused, knownAgents, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
 import * as P from "./pair.js";
 import { Reviews } from "./reviews.js";
 import { Launch, isDangerous, customized } from "./launch.js";
@@ -296,13 +296,30 @@ class Bar {
       .child(this.autoToggle(t, p))
       .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }));
 
-    return h_flex().id("cw-bar").size_full().min_w(0).px(10).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    // As the window's top row (props.controls): the window buttons where the system draws
+    // none, and room for macOS's traffic lights when the sidebar is too narrow to hold them.
+    const controls = Boolean(props()?.controls), w = window();
+    const find = (n, id) => (n?.id === id ? n : (n?.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null);
+    const root = layout(), sidebar = find(root, "sidebar");
+    const lights = controls && w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
+      ? Math.max(10, (root.traffic_lights[0] + 64) / (settings().zoom ?? 1) - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0)) : 10;
+    const winButton = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6)
+      .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(action).child(label);
+    const winIcon = (name, size) => svg(`mods/coderwriter-tabs/${name}.svg`).size(size);
+    const windowButtons = !(controls && w?.buttons) ? null : h_flex().flex_none().gap(3).items_center().pl(4)
+      .child(winButton("minimize", w.platform === "windows" ? winIcon("win-min", 16) : "−", () => run("window.minimize")))
+      .child(winButton("maximize", w.platform === "windows" ? winIcon(w.maximized ? "win-restore" : "win-max", 16) : "□", () => run("window.maximize")))
+      .child(winButton("close-window", w.platform === "windows" ? winIcon("win-close", 16) : svg("mods/pane/close.svg").size(13), () => run("window.close")));
+
+    return h_flex().id("cw-bar").size_full().min_w(0).px(10).pl(lights).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(h_flex().flex_none().gap(6).items_center().pr(2)
         .child(svg(I("pen")).size(14).text_color(t[ROLE_COLOR.writer]))
         .child(div().text_size(12.8).font_semibold().text_color(t.foreground).child("coderwriter")))
       .child(sep())
       .child(setup)
-      .when(Boolean(pairGroup), (el) => el.child(pairGroup));
+      .when(Boolean(pairGroup), (el) => el.child(pairGroup))
+      .when(Boolean(windowButtons), (el) => el.child(windowButtons));
   }
 }
 

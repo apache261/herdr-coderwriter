@@ -20,7 +20,7 @@
         {
           "id": "brand",
           "type": "block",
-          "size": { "px": 42 },
+          "size": { "px": 46 },
           "window_drag": true,
           "content": { "mod": "workspace-chrome" }
         },
@@ -46,17 +46,17 @@
       "resizable": false,
       "children": [
         {
-          "id": "tabs",
-          "type": "block",
-          "size": { "px": 42 },
-          "window_drag": true,
-          "content": { "mod": "coderwriter-tabs" }
-        },
-        {
           "id": "cw-bar",
           "type": "block",
           "size": { "px": 46 },
-          "content": { "mod": "coderwriter", "props": { "role": "bar" } }
+          "window_drag": true,
+          "content": { "mod": "coderwriter", "props": { "role": "bar", "controls": true } }
+        },
+        {
+          "id": "tabs",
+          "type": "block",
+          "size": { "px": 40 },
+          "content": { "mod": "coderwriter-tabs", "props": { "controls": false } }
         },
         {
           "id": "work-body",
