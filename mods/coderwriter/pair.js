@@ -2,6 +2,7 @@
 // run the auto loop. Everything talks to herdr-core through `hc`; state lives in
 // shared("coderwriter.pairs") keyed by the pair's tab id, so the bar and the pane
 // headers (and a reload) see the same thing.
+import { RELAY_PY } from "./relay.js";
 import { exec, shared, setShared, terminals, spaces, run, notify, readTextFile, home } from "herdr";
 
 export const PAIRS = "coderwriter.pairs";
@@ -31,28 +32,38 @@ export const keyFile = (m) => `${keyDir()}/${m.id}.key`;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const toml = (v) => JSON.stringify(String(v)); // a TOML basic string
 
-// Loads the key into the environment, then execs Codex. The key itself never sits in
-// argv: a file is read here, and an env var missing from herdr-core's environment is
-// asked of the person's interactive shell (where it is usually exported).
-const KEY_LOADER = 'mode=$1; name=$2; file=$3; shift 3; ' +
+// Loads the key into the environment, starts the relay (relay.js) to the model's server,
+// then runs Codex against the relay. The key itself never sits in argv: a file is read
+// here, and an env var missing from herdr-core's environment is asked of the person's
+// interactive shell (where it is usually exported). The relay goes when Codex does.
+const KEY_LOADER = 'mode=$1; name=$2; file=$3; up=$4; conf=$5; relay=$6; shift 6; ' +
   'case "$mode" in ' +
   'file) if [ -r "$file" ]; then v=$(cat "$file"); export "$name=$v"; else echo "coderwriter: no saved API key ($file)" >&2; fi ;; ' +
   'env) eval "cur=\\${$name:-}"; if [ -z "$cur" ] && [ -n "$SHELL" ]; then cur=$("$SHELL" -ic "printf %s \\"\\$$name\\"" 2>/dev/null </dev/null); ' +
   'if [ -n "$cur" ]; then export "$name=$cur"; else echo "coderwriter: $name is not set" >&2; fi; fi ;; ' +
-  'esac; exec "$@"';
+  'esac; ' +
+  'pf=$(mktemp) || exit 1; python3 -I -c "$relay" "$up" "$pf" & rp=$!; ' +
+  'trap \'kill $rp 2>/dev/null; rm -f "$pf"\' EXIT; trap \'exit 130\' INT TERM HUP; ' +
+  'i=0; while [ ! -s "$pf" ] && [ $i -lt 100 ] && kill -0 $rp 2>/dev/null; do sleep 0.1; i=$((i+1)); done; ' +
+  'port=$(cat "$pf" 2>/dev/null); ' +
+  'if [ -z "$port" ]; then echo "coderwriter: the model relay did not start (is python3 installed?)" >&2; exit 1; fi; ' +
+  '"$@" -c "$conf=\\"http://127.0.0.1:$port\\""';
 
 export function customArgv(m) {
   const pid = providerId(m);
   const conf = [
     "-c", `model_providers.${pid}.name=${toml(m.name || m.model)}`,
-    "-c", `model_providers.${pid}.base_url=${toml(String(m.base_url).replace(/\/+$/, ""))}`,
     "-c", `model_providers.${pid}.wire_api="responses"`,
   ];
   if (m.key !== "none") conf.push("-c", `model_providers.${pid}.env_key=${toml(keyEnvName(m))}`);
   conf.push("-c", `model_provider=${toml(pid)}`, "-m", m.model);
-  const codex = [...BASE_RUN.codex, ...conf];
-  if (m.key === "none" || (m.key === "env" && !ENV_NAME.test(m.env ?? ""))) return codex;
-  return ["sh", "-c", KEY_LOADER, "sh", m.key, keyEnvName(m), keyFile(m), ...codex];
+  // ChatGPT app connectors (Canva, Drive, ...) add ~400 KB of tool schemas, far past a
+  // local model's context, and memories need OpenAI's backend: neither applies here.
+  conf.push("-c", "features.apps=false", "-c", "features.memories=false");
+  // Codex's base_url is the relay's, known only once it listens: KEY_LOADER adds it.
+  const mode = m.key === "none" || (m.key === "env" && !ENV_NAME.test(m.env ?? "")) ? "none" : m.key;
+  return ["sh", "-c", KEY_LOADER, "sh", mode, keyEnvName(m), keyFile(m), String(m.base_url).replace(/\/+$/, ""),
+    `model_providers.${pid}.base_url`, RELAY_PY, ...BASE_RUN.codex, ...conf];
 }
 
 // How each agent starts with no extra flags: Herdr's own commands for them.
@@ -286,6 +297,18 @@ function newTabId() {
 async function excludeReviews(folder, machine) {
   const script = `f="$(git rev-parse --git-path info/exclude 2>/dev/null)" || exit 0; mkdir -p "$(dirname "$f")"; grep -qxF '${REVIEW_DIR}/' "$f" 2>/dev/null || echo '${REVIEW_DIR}/' >> "$f"`;
   await exec("sh", ["-c", script], { cwd: folder, ...(machine ? { on: machine } : {}) }).catch(() => null);
+}
+
+// No space open: make one in `folder` and wait for it to show up.
+export async function openSpace(folder) {
+  const before = new Set(spaces().map((s) => s.id));
+  run("space.new", { folder });
+  for (let i = 0; i < 40; i++) {
+    const made = spaces().find((s) => !before.has(s.id));
+    if (made) return made;
+    await sleep(250);
+  }
+  throw new Error(`Could not open a space in ${folder}`);
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.

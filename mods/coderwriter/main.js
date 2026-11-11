@@ -9,7 +9,7 @@ import { theme, spaces, panes, focused, knownAgents, openOverlay, closeOverlay, 
 import * as P from "./pair.js";
 import { Reviews } from "./reviews.js";
 import { Launch, isDangerous, customized } from "./launch.js";
-import { Usage, usageChip, refreshUsage } from "./usage.js";
+import { Usage } from "./usage.js";
 import { Models, modelLabel } from "./models.js";
 
 const I = (name) => `mods/coderwriter/icons/${name}.svg`;
@@ -99,9 +99,6 @@ class Bar {
     const machine = spaces().find((s) => s.active)?.machine ?? null;
     cx.spawn(async (cx) => { try { await refreshKnown(machine); } catch { /* shown on Start */ } cx.notify(); });
     cx.timer.every(15000, () => P.prune());
-    // Token usage for the chip (and the Usage panel, which reads the same scan).
-    cx.spawn(async (cx) => { await refreshUsage(true); cx.notify(); });
-    cx.timer.every(30000, (cx) => { cx.spawn(async (cx) => { await refreshUsage(); cx.notify(); }); });
     // Key commands ("coderwriter.<command>" in keys.json, or herdr-app do).
     cx.spawn(async (cx) => {
       for (;;) {
@@ -132,13 +129,14 @@ class Bar {
 
   start(cx) {
     if (this.starting) return;
-    const space = this.space();
-    if (!space) { notify({ title: "coderwriter", body: "Open a space first", level: "warning" }); return; }
     const pr = P.prefs();
+    const folder = this.folder ?? this.autoFolder();
     this.starting = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
+        // No space open yet: open one in the pair's folder rather than refusing.
+        const space = this.space() ?? await P.openSpace(folder);
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key) => agentFor(key, list);
@@ -153,7 +151,7 @@ class Bar {
         this.task = "";
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder: this.folder ?? this.autoFolder(), task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task) });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }
@@ -162,8 +160,9 @@ class Bar {
     });
   }
 
-  chip(t, id, children, onClick, { active = false, enabled = true, title } = {}) {
+  chip(t, id, children, onClick, { active = false, enabled = true, title, tip } = {}) {
     return h_flex().id(id).h(28).px(9).gap(6).items_center().flex_none().rounded(7)
+      .when(Boolean(tip), (el) => el.tooltip(tip))
       .border_1().border_color(active ? t.accent : t.border).bg(active ? t.selected : t.background)
       .text_size(12.3).text_color(enabled ? t.foreground : t.dim)
       .when(enabled, (el) => el.hover((s) => s.bg(t.hover)).cursor_pointer())
@@ -172,22 +171,25 @@ class Bar {
       .children(children);
   }
 
-  agentChip(t, which) {
+  // compact: icons only (a pair tab is open and its own controls need the room).
+  agentChip(t, which, compact = false) {
     const key = P.prefs()[which];
     const machine = this.space()?.machine ?? null;
     const a = agentFor(key, known(machine));
     const color = t[ROLE_COLOR[which]];
+    const role = which === "writer" ? "Writer" : "Reviewer";
     return this.chip(t, `chip-${which}`, [
       svg(I(which === "writer" ? "pen" : "search")).size(13).text_color(color),
-      div().text_color(t.muted).child(which === "writer" ? "Writer" : "Reviewer"),
+      ...(compact ? [] : [div().text_color(t.muted).child(role)]),
       agentIcon(a, 14, t.foreground),
-      div().font_medium().child(a.name.replace(" Code", "")),
+      ...(compact ? [] : [div().font_medium().child(a.name.replace(" Code", ""))]),
       svg(I("chevron-down")).size(12).text_color(t.dim),
-    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 250, height: pickerHeight(), props: { role: "pick", which } }));
+    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 250, height: pickerHeight(), props: { role: "pick", which } }),
+    { tip: compact ? `${role} for the next pair: ${a.name}` : undefined });
   }
 
   // Extra launch flags for the pair's agents: "default" when none, red when one skips permissions.
-  launchChip(t) {
+  launchChip(t, compact = false) {
     const pr = P.prefs();
     // Custom models run Codex, so Codex's flags are theirs.
     const keys = [...new Set([pr.writer, pr.reviewer].map((k) => (P.isCustom(k) ? "codex" : k)))];
@@ -200,9 +202,11 @@ class Bar {
       .hover((s) => s.bg(t.hover)).cursor_pointer()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click(() => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } }))
+      .when(compact, (el) => el.tooltip(`Launch flags: ${label}`))
       .child(svg(I(danger ? "alert" : "terminal")).size(13).text_color(danger ? t.blocked : t.dim))
-      .child(div().text_color(t.muted).child("Launch"))
-      .child(div().max_w(160).truncate().text_color(danger ? t.blocked : custom.length ? t.foreground : t.dim).child(label))
+      .when(!compact, (el) => el
+        .child(div().text_color(t.muted).child("Launch"))
+        .child(div().max_w(160).truncate().text_color(danger ? t.blocked : custom.length ? t.foreground : t.dim).child(label)))
       .child(svg(I("chevron-down")).size(12).text_color(t.dim));
   }
 
@@ -264,29 +268,32 @@ class Bar {
     const folder = this.folder ?? this.autoFolder();
     const sep = () => div().w(1).h(22).flex_none().bg(t.border);
 
-    const setup = h_flex().flex_1().min_w(0).gap(6).items_center()
-      .child(this.agentChip(t, "writer"))
-      .child(this.agentChip(t, "reviewer"))
-      .child(this.launchChip(t))
+    // With a pair tab open, the setup controls (which only shape the next pair) shrink to
+    // icons so the pair's own controls fit; overflow_hidden keeps whatever still doesn't
+    // fit from painting over them.
+    const compact = Boolean(p);
+    const setup = h_flex().flex_1().min_w(0).overflow_hidden().gap(6).items_center()
+      .child(this.agentChip(t, "writer", compact))
+      .child(this.agentChip(t, "reviewer", compact))
+      .child(this.launchChip(t, compact))
       .child(this.chip(t, "folder", [
         svg(I("folder")).size(13).text_color(this.folder ? t.accent : t.dim),
-        div().max_w(170).truncate().text_color(t.muted).child(tilde(folder)),
-        ...(this.folder ? [div().id("folder-reset").text_color(t.dim).hover((s) => s.text_color(t.foreground))
+        ...(compact ? [] : [div().max_w(170).truncate().text_color(t.muted).child(tilde(folder))]),
+        ...(this.folder && !compact ? [div().id("folder-reset").text_color(t.dim).hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.folder = null; cx.notify(); })
           .child(svg(I("x")).size(11))] : []),
       ], (_e, cx) => cx.spawn(async (cx) => {
         const chosen = await pickFolder({ prompt: "Use for the pair" });
         if (chosen) { this.folder = chosen; cx.notify(); }
-      }), { title: "Folder" }))
-      .child(Input.new(this.input).flex_1().min_w(120).h(28).px(9).rounded(7).border_1()
+      }), { title: "Folder", tip: compact ? tilde(folder) : undefined }))
+      .child(Input.new(this.input).flex_1().min_w(compact ? 80 : 120).h(28).px(9).rounded(7).border_1()
         .border_color(this.inputFocused ? t.accent : t.border).bg(t.background).text_size(12.5).text_color(t.foreground))
       .when(!p, (el) => el.child(this.rounds(t, null)).child(this.autoToggle(t, null)))
-      .child(this.button(t, "start", "play", this.starting ? "Starting…" : "Start", (cx) => this.start(cx), { primary: true, enabled: !this.starting }))
-      .child(usageChip(t));
+      .child(this.button(t, "start", "play", this.starting ? "Starting…" : "Start", (cx) => this.start(cx), { primary: true, enabled: !this.starting }));
 
     const pairGroup = !p ? null : h_flex().flex_none().gap(6).items_center()
       .child(sep())
-      .child(h_flex().flex_none().gap(6).items_center().max_w(260)
+      .child(h_flex().flex_none().gap(6).items_center().max_w(200)
         .when(busy, (el) => el.child(svg(I("spinner")).size(12).flex_none().text_color(t.working).spin(900)))
         .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(this.verdictPill(t, p) ?? div())
