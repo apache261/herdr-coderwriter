@@ -10,11 +10,21 @@ Changes panels.
 
 - Writer and reviewer side by side, each pane marked `WRITER` / `REVIEWER` with a live status.
 - Review →, ← Feedback, or **Auto** for hands-off rounds (1–10, default 3).
+- **Test gate**: a test command per folder (`npm test`, `pytest -q`, …) runs before every
+  review. A failure goes back to the writer instead of the reviewer; Auto tries 3 times, then
+  pauses.
+- **Round snapshots**: the files are saved at the start and at every review, so the reviewer
+  can check just what changed since its last round, and the Reviews panel can put the files
+  back to any round (undoable).
+- **Stuck-loop detection**: a finding that comes back unchanged from the round before pauses
+  Auto, and Feedback sends it back to the writer with a nudge.
 - **Launch** flags per agent: skip permissions, permission modes, sandbox, web search or any
   flags of your own; empty means each agent's default. Optionally also used by the + menu.
 - **Custom models**: any OpenAI-compatible endpoint that serves the Responses API
-  (OpenRouter, OpenAI, Ollama, LM Studio, vLLM, LiteLLM, …) as writer or reviewer, run
-  through Codex. A Test button checks the endpoint before you use it.
+  (OpenRouter, OpenAI, Ollama, LM Studio, vLLM, llama.cpp, LiteLLM, …) as writer or reviewer,
+  run through Codex via a small local relay that folds Codex's several system messages into
+  one (some chat templates, such as Gemma's in llama.cpp, accept only one). A Test button
+  checks the endpoint before you use it.
 - **Reviews** panel: every round's verdict and findings, rendered.
 - **Usage** panel: tokens per session and per day from the agents' local logs (custom models
   counted separately), plus each plan's limits where they apply: Claude's current session and
@@ -53,6 +63,12 @@ removes it.
   `~/.claude/.credentials.json` (macOS: the keychain), read only and never refreshed or sent
   anywhere else; and `codex app-server`, which contacts OpenAI as Codex's `/status` does.
   Each is skipped when that agent isn't installed or isn't signed in with a plan.
+- Test gate: runs your test command with `sh -c` in the pair folder before each review (10
+  minute limit), output to `.coderwriter/tests-<round>.txt`.
+- Round snapshots: commits made with `git commit-tree` from a temporary index (your staging is
+  untouched), kept only under `refs/coderwriter/<pair>/`, never on a branch, and deleted when
+  the pair's tab closes. Restoring rewrites the working tree from one (after saving the current
+  files as `before-restore`, for Undo); outside a git repo there are no snapshots.
 - The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
   rename something, in the folder you're browsing.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the
@@ -61,6 +77,7 @@ removes it.
   (and `/chat/completions` if that fails) to the endpoint you enter. A pasted API key is
   saved only in `~/.config/coderwriter/keys/<id>.key` (folder 700, file 600), never in Herdr's
   shared state, the layout or a command line; an environment-variable key is read from
-  Herdr's environment or, if missing there, from your interactive shell.
+  Herdr's environment or, if missing there, from your interactive shell. Each custom-model agent
+  runs `python3` as a relay on `127.0.0.1` (a free port) that lives as long as the agent.
 
 See [RECIPE.md](RECIPE.md) for the full description, the build notes and what "done" looks like.

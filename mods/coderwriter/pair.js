@@ -15,6 +15,7 @@ export function prefs() {
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
+  p.tests = p.tests && typeof p.tests === "object" ? p.tests : {};
   return p;
 }
 
@@ -194,15 +195,27 @@ export function writerBrief(task) {
 }
 export function reviewBrief(p, round) {
   const file = `${REVIEW_DIR}/review-${round}.md`;
+  const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], prev = cp[round - 1];
+  const snaps = !now ? "" : round > 1 && prev
+    ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check your round ${round - 1} findings were addressed.` +
+      (base ? ` The whole change is \`git diff ${base} ${now}\`.` : "")
+    : base ? ` The whole change is \`git diff ${base} ${now}\` (snapshots that include untracked files).` : "";
+  const t = p.tests;
+  const tests = t?.state === "pass" && t.round === round ? ` The tests (\`${t.cmd}\`) pass.` : "";
   return `You are the REVIEWER in a writer/reviewer pair (round ${round}).` +
     (p.task ? ` The writer's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
-    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` +
+    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: APPROVED" or "VERDICT: CHANGES_REQUESTED",` +
     ` then numbered findings, most important first, each with the file and what to change. Then stop.`;
 }
-export function feedbackBrief(round) {
-  return `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
-    `(push back in your reply if you disagree with one). Keep the changes uncommitted.`;
+export function feedbackBrief(p) {
+  const round = p.round;
+  const again = (p.repeats ?? []).length
+    ? ` These were raised in round ${round - 1} too and are still open: ${p.repeats.map((f) => `"${short(f, 140)}"`).join("; ")}. ` +
+      `Fix them properly this time, or explain why you won't.`
+    : "";
+  return restoredNote(p) + `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
+    `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.`;
 }
 
 function where(p) { return p.machine ? { on: p.machine } : {}; }
@@ -212,11 +225,136 @@ async function verdictOf(p, round) {
   const path = join(p.folder, `${REVIEW_DIR}/review-${round}.md`);
   let text = null;
   try { text = await readTextFile(path, where(p)); } catch { text = null; }
-  if (text == null) return { verdict: "missing", summary: `No ${REVIEW_DIR}/review-${round}.md` };
+  if (text == null) return { verdict: "missing", summary: `No ${REVIEW_DIR}/review-${round}.md`, text: null };
   const m = /VERDICT:\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(text);
   const verdict = !m ? "unknown" : /^APPROVED$/i.test(m[1]) ? "approved" : "changes";
-  const findings = text.split("\n").filter((l) => /^\s*\d+[.)]/.test(l)).length;
-  return { verdict, summary: verdict === "approved" ? "Approved" : verdict === "changes" ? `${findings} finding${findings === 1 ? "" : "s"}` : "No verdict line" };
+  const findings = findingsOf(text).length;
+  return { verdict, text, summary: verdict === "approved" ? "Approved" : verdict === "changes" ? `${findings} finding${findings === 1 ? "" : "s"}` : "No verdict line" };
+}
+
+// ---- repeated findings ----------------------------------------------------------
+// A review's numbered findings, and which of them came back from the round before:
+// same words (Jaccard >= 0.6), or the same file named and much the same words (>= 0.45).
+export function findingsOf(text) {
+  return (text ?? "").split("\n").map((l) => /^\s*\d+[.)]\s+(.+)/.exec(l)?.[1]?.trim()).filter(Boolean);
+}
+const STOP = new Set("the and for that this with from should into when then than are was were has have not but its it's use uses used also only just which there their them they will would could can".split(" "));
+function words(f) {
+  return new Set(f.toLowerCase().replace(/[`*_"'()[\]{},;:!?]/g, " ").split(/\s+/).map((w) => w.replace(/\.$/, "")).filter((w) => w.length > 2 && !STOP.has(w)));
+}
+const filesIn = (f) => new Set((f.match(/[\w./-]+\.[a-z][\w]{0,5}\b/gi) ?? []).map((x) => x.toLowerCase()));
+function similar(a, b) {
+  const wa = words(a), wb = words(b);
+  if (!wa.size || !wb.size) return false;
+  let both = 0;
+  for (const w of wa) if (wb.has(w)) both++;
+  const jaccard = both / (wa.size + wb.size - both);
+  const fa = filesIn(a), sameFile = [...filesIn(b)].some((f) => fa.has(f));
+  return jaccard >= 0.6 || (sameFile && jaccard >= 0.45);
+}
+export function repeatedFindings(before, now) {
+  const old = findingsOf(before);
+  return findingsOf(now).filter((f) => old.some((o) => similar(o, f)));
+}
+const short = (f, n = 90) => (f.length > n ? f.slice(0, n - 1) + "…" : f);
+
+// ---- test gate ------------------------------------------------------------------
+// A per-folder test command, run before each review. Its output goes to
+// .coderwriter/tests-<round>.txt; a failure goes back to the writer, not the reviewer.
+export const TEST_FIX_MAX = 3; // writer attempts at failing tests per round (auto loop)
+export function testCommand(folder) { return (prefs().tests[folder] ?? "").trim(); }
+export function setTestCommand(folder, cmd) {
+  const tests = { ...prefs().tests };
+  if (cmd.trim()) tests[folder] = cmd; else delete tests[folder];
+  setPrefs({ tests });
+}
+
+async function runTests(tab, round) {
+  const p = pair(tab);
+  const cmd = testCommand(p.folder);
+  if (!cmd) return null;
+  const file = `${REVIEW_DIR}/tests-${round}.txt`;
+  update(tab, { tests: { state: "running", round, cmd, file }, note: `Round ${round}: running tests` });
+  let code = 1, crashed = null;
+  try {
+    const r = await exec("sh", ["-c", 'mkdir -p "$1" && sh -c "$3" > "$2" 2>&1 </dev/null', "sh", REVIEW_DIR, file, cmd],
+      { cwd: p.folder, timeout: 600000, ...where(p) });
+    code = r.code;
+  } catch (e) { crashed = String(e.message ?? e); }
+  const pass = code === 0 && !crashed;
+  update(tab, { tests: { state: pass ? "pass" : "fail", round, cmd, file, code, error: crashed, at: Date.now() } });
+  return pass;
+}
+
+export function testsBrief(p) {
+  const t = p.tests ?? {};
+  return restoredNote(p) + `The test command \`${t.cmd}\` fails${t.error ? ` (${t.error})` : ` with exit code ${t.code}`}. ` +
+    `Its output is in ${t.file}. Fix the code so the tests pass. Don't skip or weaken tests to get there; ` +
+    `if a test itself is wrong, fix it and say why. Keep the changes uncommitted.`;
+}
+
+// ---- checkpoints ----------------------------------------------------------------
+// Each round's files, as a commit under refs/coderwriter/<pair>/ (never on a branch):
+// the real index is copied so untracked files are in it too and the user's staging is
+// left alone. Round 0 is the folder before the writer started.
+const SNAP = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 3; ' +
+  'idx=$(mktemp) || exit 1; trap \'rm -f "$idx"\' EXIT; ' +
+  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp "$real" "$idx" || rm -f "$idx"; ' +
+  'GIT_INDEX_FILE="$idx" git add -A :/ >/dev/null 2>&1 || exit 1; ' +
+  'tree=$(GIT_INDEX_FILE="$idx" git write-tree) || exit 1; ' +
+  'parent=$(git rev-parse -q --verify HEAD); ' +
+  'c=$(git -c user.name=coderwriter -c user.email=coderwriter@localhost commit-tree "$tree" ${parent:+-p "$parent"} -m "$2") || exit 1; ' +
+  'git update-ref "$1" "$c" && echo "$c"';
+const refBase = (p) => `refs/coderwriter/${p.tab.replace(/[^\w-]/g, "-")}`;
+
+async function snapshot(p, name, message) {
+  try {
+    const r = await exec("sh", ["-c", SNAP, "sh", `${refBase(p)}/${name}`, message], { cwd: p.folder, timeout: 120000, ...where(p) });
+    return r.code === 0 ? r.stdout.trim() || null : null;
+  } catch { return null; }
+}
+async function checkpoint(tab, round) {
+  const p = pair(tab);
+  const sha = await snapshot(p, `round-${round}`, `coderwriter: round ${round}`);
+  if (sha) update(tab, { checkpoints: { ...(pair(tab).checkpoints ?? {}), [round]: sha } });
+  return sha;
+}
+
+// Put the files back as they were in a checkpoint (or any snapshot sha). What is there
+// now is kept first as "before-restore", so the restore itself can be undone.
+const RESTORE = 'top=$(git rev-parse --show-toplevel) && cd "$top" || exit 1; ' +
+  'git diff --name-only -z --diff-filter=A "$1" "$2" | xargs -0 -r rm -f -- ; ' +
+  'git restore --source="$1" --worktree -- :/';
+async function restoreTo(tab, sha, label) {
+  const p = pair(tab);
+  const undo = await snapshot(p, "before-restore", `coderwriter: before restoring ${label}`);
+  if (!undo) throw new Error("Could not save the current files first, so nothing was restored");
+  const r = await exec("sh", ["-c", RESTORE, "sh", sha, undo], { cwd: p.folder, timeout: 120000, ...where(p) });
+  if (r.code !== 0) throw new Error(`Restore failed: ${(r.stderr || r.stdout).trim().split("\n").pop()}`);
+  update(tab, { undo: { sha: undo, round: p.round ?? 0, verdict: p.verdict ?? null } });
+  return undo;
+}
+export function restore(tab, round) {
+  return job(tab, async () => {
+    const p = pair(tab);
+    const sha = p.checkpoints?.[round];
+    if (!sha) throw new Error(`No snapshot for round ${round}`);
+    const label = round === 0 ? "the start" : `round ${round}`;
+    await restoreTo(tab, sha, label);
+    update(tab, { round, verdict: null, phase: "restored", restored: label, repeats: [], tests: null,
+      note: `Files restored to ${label}${round === 0 ? "" : "'s review"}` });
+  });
+}
+export function undoRestore(tab) {
+  return job(tab, async () => {
+    const u = pair(tab)?.undo;
+    if (!u) throw new Error("Nothing to undo");
+    await restoreTo(tab, u.sha, "the undo");
+    update(tab, { round: u.round, verdict: u.verdict, undo: null, restored: null, phase: "idle", note: "Restore undone" });
+  });
+}
+function restoredNote(p) {
+  return p.restored ? `(Note: the files were reset to how they were at ${p.restored}; your later edits are gone.) ` : "";
 }
 
 // Run one job for a pair. `fn(p, g)` does the work; errors become a note + toast.
@@ -234,22 +372,46 @@ async function job(tab, fn) {
   finally { if (gen[tab] === g) busy[tab] = false; }
 }
 
+// One review round: tests first (a failure stops here and returns "tests"), then a
+// checkpoint of the files, then the reviewer.
 async function reviewRound(tab, g) {
-  const p = pair(tab);
+  let p = pair(tab);
   await settle(tab, g, p.writer.t, "writer");
   const round = (p.round ?? 0) + 1;
-  update(tab, { round, phase: "reviewing", verdict: null, note: `Round ${round}: reviewing` });
+  const passed = await runTests(tab, round);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (passed === false) {
+    update(tab, { phase: "tests_failed", note: `Tests failed before round ${round}: Feedback sends them to the writer` });
+    return "tests";
+  }
+  await checkpoint(tab, round);
+  p = pair(tab);
+  update(tab, { round, phase: "reviewing", verdict: null, repeats: [], testFixes: 0, note: `Round ${round}: reviewing` });
   await say(tab, g, p.reviewer.t, "reviewer", reviewBrief(p, round));
   const v = await verdictOf(pair(tab), round);
-  update(tab, { phase: "reviewed", verdict: v.verdict, note: `Round ${round}: ${v.summary}` });
+  let repeats = [];
+  if (v.verdict === "changes" && round > 1) {
+    const before = await verdictOf(pair(tab), round - 1);
+    repeats = repeatedFindings(before.text, v.text);
+  }
+  const again = repeats.length ? ` · ${repeats.length} repeated from round ${round - 1}` : "";
+  update(tab, { phase: "reviewed", verdict: v.verdict, repeats, note: `Round ${round}: ${v.summary}${again}` });
   return v.verdict;
 }
 
 async function fixRound(tab, g) {
   const p = pair(tab);
   update(tab, { phase: "fixing", note: `Round ${p.round}: writer is fixing` });
-  await say(tab, g, p.writer.t, "writer", feedbackBrief(p.round));
-  update(tab, { phase: "written", note: `Round ${p.round}: fixed, ready for review` });
+  await say(tab, g, p.writer.t, "writer", feedbackBrief(p));
+  update(tab, { phase: "written", restored: null, note: `Round ${p.round}: fixed, ready for review` });
+}
+
+async function fixTests(tab, g) {
+  const p = pair(tab);
+  const tries = (p.testFixes ?? 0) + 1;
+  update(tab, { phase: "fixing", testFixes: tries, note: `Writer is fixing the failing tests (try ${tries})` });
+  await say(tab, g, p.writer.t, "writer", testsBrief(p));
+  update(tab, { phase: "written", restored: null, note: "Tests fixed? Send to review to check" });
 }
 
 async function loop(tab, g) {
@@ -258,6 +420,15 @@ async function loop(tab, g) {
     if (!p?.auto || gen[tab] !== g) return;
     const verdict = await reviewRound(tab, g);
     p = pair(tab);
+    if (verdict === "tests") {
+      if ((p.testFixes ?? 0) >= TEST_FIX_MAX) {
+        update(tab, { auto: false, note: `Tests still fail after ${p.testFixes} tries: loop paused` });
+        notify({ title: "coderwriter: tests fail", body: `${p.tests?.cmd} still fails after ${p.testFixes} tries`, level: "warning", action: { name: "tab.select", args: { id: tab } } });
+        return;
+      }
+      await fixTests(tab, g);
+      continue;
+    }
     if (verdict === "approved") {
       update(tab, { auto: false, phase: "approved", note: `Approved in round ${p.round}` });
       notify({ title: "coderwriter: approved", body: `${p.task || "The change"} — approved in round ${p.round}`, level: "success", action: { name: "tab.select", args: { id: tab } } });
@@ -266,6 +437,13 @@ async function loop(tab, g) {
     if (verdict !== "changes") {
       update(tab, { auto: false, note: `Round ${p.round}: the review has no verdict line; loop paused` });
       notify({ title: "coderwriter", body: `Round ${p.round}: no VERDICT line in the review, loop paused`, level: "warning" });
+      return;
+    }
+    if ((p.repeats ?? []).length) {
+      const f = short(p.repeats[0]);
+      update(tab, { auto: false, note: `Round ${p.round}: "${f}" came back from round ${p.round - 1}: loop paused` });
+      notify({ title: "coderwriter: stuck", body: `Round ${p.round} repeats a round ${p.round - 1} finding: "${f}". Loop paused; Feedback sends it back with a nudge.`,
+        level: "warning", action: { name: "tab.select", args: { id: tab } } });
       return;
     }
     if (p.round >= p.max) {
@@ -279,7 +457,20 @@ async function loop(tab, g) {
 
 export function review(tab) { return job(tab, (g) => reviewRound(tab, g)); }
 export function feedback(tab) {
-  return job(tab, (g) => (pair(tab)?.round ? fixRound(tab, g) : Promise.reject(new Error("No review yet: send to review first"))));
+  return job(tab, (g) => {
+    const p = pair(tab);
+    if (p?.phase === "tests_failed") return fixTests(tab, g);
+    return p?.round ? fixRound(tab, g) : Promise.reject(new Error("No review yet: send to review first"));
+  });
+}
+// Run the test command now, outside a round (to check the command itself).
+export function testNow(tab) {
+  return job(tab, async () => {
+    const p = pair(tab);
+    const pass = await runTests(tab, (p.round ?? 0) + 1);
+    if (pass === null) throw new Error("No test command for this folder");
+    update(tab, { note: pass ? "Tests pass" : "Tests fail: Feedback sends them to the writer", ...(pass ? {} : { phase: "tests_failed" }) });
+  });
 }
 export function setAuto(tab, on) {
   update(tab, { auto: on });
@@ -336,6 +527,8 @@ export async function start({ space, folder, task, writer, reviewer, max, auto }
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
     round: 0, max, auto, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
+  // Round 0: the files before the writer touches them (no-op outside a git repo).
+  await checkpoint(tab, 0);
   // The tab appears once the app adopts the labelled terminals.
   for (let i = 0; i < 40; i++) {
     if (spaces().some((s) => s.tabs.some((x) => x.id === tab))) break;
@@ -366,6 +559,10 @@ export function resumeNote() {
       all[tab] = { ...p, auto: false, phase: "paused", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
       changed = true;
     }
+    if (all[tab].tests?.state === "running") {
+      all[tab] = { ...all[tab], tests: null };
+      changed = true;
+    }
   }
   if (changed) setShared(PAIRS, all);
 }
@@ -375,5 +572,12 @@ export function prune() {
   const live = new Set(terminals().filter((t) => t.state === "live").map((t) => t.address));
   const all = pairs();
   const keep = Object.fromEntries(Object.entries(all).filter(([, p]) => live.has(p.writer?.t) || live.has(p.reviewer?.t)));
-  if (Object.keys(keep).length !== Object.keys(all).length) setShared(PAIRS, keep);
+  if (Object.keys(keep).length === Object.keys(all).length) return;
+  setShared(PAIRS, keep);
+  // The pair's round snapshots go with it.
+  for (const [tab, p] of Object.entries(all)) {
+    if (keep[tab] || !p.folder || !p.tab) continue;
+    exec("sh", ["-c", 'git for-each-ref --format="delete %(refname)" "$1/" | git update-ref --stdin', "sh", refBase(p)],
+      { cwd: p.folder, ...where(p) }).catch(() => null);
+  }
 }

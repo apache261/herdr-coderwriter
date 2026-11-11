@@ -11,6 +11,7 @@ import { Reviews } from "./reviews.js";
 import { Launch, isDangerous, customized } from "./launch.js";
 import { Usage } from "./usage.js";
 import { Models, modelLabel } from "./models.js";
+import { Tests } from "./tests.js";
 
 const I = (name) => `mods/coderwriter/icons/${name}.svg`;
 const KNOWN = "coderwriter.agents";
@@ -254,6 +255,21 @@ class Bar {
     ], () => { if (p) P.setAuto(p.tab, !on); else P.setPrefs({ auto: !on }); }, { active: on });
   }
 
+  // The test gate: its last result, and the popup that sets the command.
+  testsChip(t, p) {
+    const cmd = P.testCommand(p.folder);
+    const s = p.tests?.state;
+    const ok = t.done ?? t.ansi2;
+    const icon = !cmd ? svg(I("flask")).size(13).text_color(t.dim)
+      : s === "running" ? svg(I("spinner")).size(13).text_color(t.working).spin(900)
+      : s === "pass" ? svg(I("check")).size(13).text_color(ok)
+      : s === "fail" ? svg(I("x")).size(13).text_color(t.blocked)
+      : svg(I("flask")).size(13).text_color(t.accent);
+    return this.chip(t, "tests", [icon, div().text_color(cmd ? t.foreground : t.muted).child("Tests")],
+      () => openOverlay({ mod: "coderwriter", kind: "popup", width: 440, height: 360, props: { role: "tests", tab: p.tab } }),
+      { tip: cmd ? `Test gate: ${cmd}` : "Set a test command to run before each review", active: s === "fail" });
+  }
+
   verdictPill(t, p) {
     if (!p?.verdict) return null;
     const map = { approved: ["Approved", t.done ?? t.ansi2], changes: ["Changes requested", t.blocked], missing: ["No review file", t.dim], unknown: ["No verdict", t.dim] };
@@ -297,9 +313,10 @@ class Bar {
         .when(busy, (el) => el.child(svg(I("spinner")).size(12).flex_none().text_color(t.working).spin(900)))
         .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(this.verdictPill(t, p) ?? div())
+      .child(this.testsChip(t, p))
       .child(this.rounds(t, p))
       .child(this.button(t, "to-review", "arrow-right", "Review", () => P.review(p.tab), { enabled: !busy }))
-      .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && (p.round ?? 0) > 0 }))
+      .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && ((p.round ?? 0) > 0 || p.phase === "tests_failed") }))
       .child(this.autoToggle(t, p))
       .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }));
 
@@ -334,7 +351,7 @@ export default class CoderWriter extends View {
   init(initProps, cx) {
     const role = props()?.role;
     this.inner = role === "pick" ? new Picker() : role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
-      : role === "launch" ? new Launch() : role === "models" ? new Models() : new Bar();
+      : role === "launch" ? new Launch() : role === "models" ? new Models() : role === "tests" ? new Tests() : new Bar();
     this.inner.init(initProps, cx);
   }
   render(cx) { return this.inner.render(cx); }
