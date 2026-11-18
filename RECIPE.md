@@ -217,6 +217,20 @@ and dark themes):
   `coderwriter.stop`, `coderwriter.team` (Team mode on
   or off for the next pair), `coderwriter.show-plan` and `coderwriter.show-audit` (a team's
   Plan and Audit dialogs).
+- **Own git worktree** (`prefs.worktree`, default on; the dialog's toggle, disabled outside a
+  git repo): the bar runs `git worktree add -q -b cw/<first 4 words of the task>-<4 hex>
+  <dir>/<repo>/<branch with / as -> HEAD` (`dir`: `worktrees.directory` from `settings.json`,
+  default `~/.herdr/worktrees`, `~` expanded on the pair's machine), opens a space there
+  (`space.new {folder, machine}`) and starts the pair in it; the pair keeps
+  `worktree: {path, branch}` and its approved / done toasts name both. Never removed by
+  coderwriter. Under the toggle one line says what will happen: checking; not a git repo; a
+  new branch from `<branch>`'s last commit (with "its N uncommitted changes stay out"); in red
+  with an alert, "N uncommitted changes here: the agents will work on top of them"; or "in your
+  working copy, on `<branch>`".
+- **Turn limit** (`prefs.turnLimit`, minutes: none, 10, 15, 20, 30, 45, 60, 90, 120; default 30;
+  kept per pair): `say` and `settle` wait at most that long for one turn, counting from the
+  send and starting again after a `blocked` stretch; over it, a warning toast ("the <role> is
+  taking long", selects the tab) and the job stops with phase `error`, Auto off.
 - **Agents per role**: `knownAgents()` (Herdr's programs with a `run`, Claude and Codex first)
   plus custom models (`m:<id>`) plus `cmd`: the role's own command line in
   `prefs.commands[role]`, split shell-style and run as the argv (no launch flags added). The

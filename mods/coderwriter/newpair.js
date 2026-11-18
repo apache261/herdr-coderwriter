@@ -66,7 +66,17 @@ export class NewPair {
       this.cmds[role] = input;
     }
     cx.spawn(async (cx) => { try { await refreshKnown(this.machine); } catch { this.failed = true; } cx.notify(); });
+    this.git = null; // the folder's git state: { repo, branch, dirty }
+    this.loadGit(cx);
   }
+
+  loadGit(cx) {
+    const folder = this.folder;
+    this.git = null;
+    cx.spawn(async (cx) => { const g = await P.gitState(folder, this.machine); if (folder === this.folder) { this.git = g; cx.notify(); } });
+  }
+  // A worktree only for a git repo.
+  useWorktree() { return Boolean(P.prefs().worktree && this.git?.repo); }
 
   chosen() {
     const pr = P.prefs(), list = known(this.machine);
@@ -84,9 +94,45 @@ export class NewPair {
 
   start(cx) {
     if (this.problem()) { cx.notify(); return; }
-    setShared(NEW_PAIR, { task: this.input.value(), folder: this.folder, at: Date.now() });
+    setShared(NEW_PAIR, { task: this.input.value(), folder: this.folder, worktree: this.useWorktree(), at: Date.now() });
     run("coderwriter.newpair");
     closeOverlay(props().overlay);
+  }
+
+  // Where the agents will work, said plainly, and the time limit per turn.
+  safety(t) {
+    const pr = P.prefs(), g = this.git, wt = this.useWorktree(), repo = Boolean(g?.repo);
+    const n = g?.dirty ?? 0, changes = `${n} uncommitted change${n === 1 ? "" : "s"}`;
+    const [text, warn] = !g ? ["Checking the folder…", false]
+      : !repo ? ["Not a git repository: the agents work in it directly (no worktree, no snapshots).", false]
+      : wt ? [`A new branch from ${g.branch}'s last commit, in its own folder and space: your working copy isn't touched${n ? ` (its ${changes} stay out)` : ""}.`, false]
+      : n ? [`${changes} here: the agents will work on top of them, in your working copy.`, true]
+      : [`The agents work in your working copy, on ${g.branch}.`, false];
+    const limits = [0, 10, 15, 20, 30, 45, 60, 90, 120];
+    const at = Math.max(0, limits.indexOf(pr.turnLimit ?? 30));
+    const step = (d) => P.setPrefs({ turnLimit: limits[Math.max(0, Math.min(limits.length - 1, at + d))] });
+    return v_flex().gap(6)
+      .child(h_flex().gap(10).items_center()
+        .child(h_flex().id("worktree").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
+          .border_1().border_color(wt ? t.accent : t.border).bg(wt ? t.selected : t.background)
+          .when(repo, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+          .when(!repo, (el) => el.opacity(0.5))
+          .tooltip("Work on a new branch in a git worktree of its own, so your working copy is never touched")
+          .on_click((_e, cx) => { if (repo) { P.setPrefs({ worktree: !pr.worktree }); cx.notify(); } })
+          .child(svg(I("branch")).size(13).text_color(wt ? t.accent : t.dim))
+          .child("Own git worktree")
+          .when(wt, (el) => el.child(svg(I("check")).size(12).text_color(t.accent))))
+        .child(div().flex_1())
+        .child(h_flex().gap(4).items_center().text_color(t.muted)
+          .tooltip("The longest one agent may work on one turn before the pair pauses (its pane goes on)")
+          .child(svg(I("timer")).size(13).text_color(t.dim)).child("Turn limit"))
+        .child(h_flex().h(28).px(4).gap(2).items_center().flex_none().rounded(7).border_1().border_color(t.border).bg(t.background)
+          .child(this.iconButton(t, "limit-minus", "minus", () => step(-1), at > 0))
+          .child(div().px(4).child(limits[at] ? `${limits[at]} min` : "none"))
+          .child(this.iconButton(t, "limit-plus", "plus", () => step(1), at < limits.length - 1))))
+      .child(h_flex().gap(6).items_start().text_size(11.3).text_color(warn ? t.blocked : t.dim)
+        .when(warn, (el) => el.child(svg(I("alert")).size(12).flex_none().mt(1)))
+        .child(div().flex_1().min_w(0).child(text)));
   }
 
   // One role: its name (in a team the writer is the Coder) and its agents.
@@ -174,12 +220,13 @@ export class NewPair {
             .cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => cx.spawn(async (cx) => {
               const picked = await pickFolder({ prompt: team ? "Use for the team" : "Use for the pair" });
-              if (picked) { this.folder = picked; cx.notify(); }
+              if (picked) { this.folder = picked; this.loadGit(cx); cx.notify(); }
             }))
             .child(svg(I("folder")).size(13).text_color(t.dim))
             .child(div().flex_none().font_medium().text_color(t.foreground).child(this.folder.replace(/\/+$/, "").split("/").pop() || "/"))
             .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(tilde(this.folder)))
             .child(div().flex_none().text_size(11.5).text_color(t.dim).child("Change…"))))
+        .child(this.safety(t))
         .child(v_flex().gap(6)
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))

@@ -63,18 +63,19 @@ class Bar {
     return tab ? P.pair(tab) : null;
   }
 
-  // req: { task, folder } from the New pair dialog (which only leaves the request: it
-  // closes, and a pair's jobs outlive it).
+  // req: { task, folder, worktree } from the New pair dialog (which only leaves the request:
+  // it closes, and a pair's jobs outlive it). With worktree, the pair gets a new git worktree
+  // and a space of its own there.
   start(cx, req) {
     if (this.starting) return;
     const pr = P.prefs();
-    const folder = req.folder || this.autoFolder();
+    let folder = req.folder || this.autoFolder();
     this.starting = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
         // No space open yet: open one in the pair's folder rather than refusing.
-        const space = this.space() ?? await P.openSpace(folder);
+        let space = this.space() ?? await P.openSpace(folder);
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key, role) => agentFor(key, list, role);
@@ -86,9 +87,16 @@ class Bar {
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
         const task = (req.task ?? "").trim();
+        let worktree = null;
+        if (req.worktree) {
+          worktree = await P.makeWorktree(folder, space.machine ?? null, task);
+          folder = worktree.path;
+          space = await P.openSpace(folder, space.machine ?? null);
+        }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, max: pr.max, auto: pr.auto && Boolean(task),
+          lens: Boolean(pr.lens), team: Boolean(pr.team), worktree, turnLimit: pr.turnLimit ?? 30 });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }

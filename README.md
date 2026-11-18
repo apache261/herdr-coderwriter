@@ -10,7 +10,9 @@ work before you see it.
   quality and security, round after round, until every check passes. The PM writes a report
   at the end.
 
-Nothing is ever committed: the work stays uncommitted for you to review and commit.
+Nothing is ever committed: the work stays uncommitted for you to review and commit. By
+default it happens in a **git worktree of its own** (a new branch from your last commit), so
+your working copy is never touched.
 
 ![coderwriter](preview.png)
 
@@ -62,6 +64,16 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   bar's **+** menu has them too, plus **Terminal** and Herdr's own menu. One dialog holds
   every setting: the task, an agent per role, the folder, rounds, Team, Ponytail, Auto,
   **Launch flags…** and **Custom models…**.
+- **Own git worktree** (on by default in a git repo): the pair or team works on a new branch
+  `cw/<task>-<id>` from the last commit, checked out where Herdr's own New worktree puts them
+  (`<worktrees.directory>/<repo>/<branch>`, default `~/.herdr/worktrees`), in a space of its
+  own that the sidebar nests under the repo. Your working copy, and its uncommitted changes,
+  are never touched. When it's done, merge the branch (or take what you want) and remove the
+  worktree with Herdr's Remove worktree; coderwriter never deletes one. Turned off, the dialog
+  warns in red when the agents would work on top of uncommitted changes.
+- **Turn limit** (default 30 min, or none): when one agent works longer than that on one turn,
+  the run pauses with a toast (time it waits for you doesn't count); the agent goes on in its
+  pane, and Review or Feedback carry on.
 - **The bar follows the shown tab**: in a pair's or team's tab it shows only that one's
   status and **Review**, **Feedback**, **Plan**, **Audit**, **Auto**, **Stop**.
 - **Any agent per role**: any agent Herdr knows and finds installed (Claude Code, Codex,
@@ -160,6 +172,9 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
 
 - Starts the agents and sends them messages with Herdr's `hc` (`hc run`, `hc send`, `hc wait`),
   and places a team's panes with Herdr's `terminal.keep` and `pane.swap`.
+- Own git worktree: `git worktree add -b cw/<task>-<id> <path> HEAD` in the folder's repo
+  (reading `worktrees.directory` from Herdr's `settings.json`), then `space.new` there. The
+  dialog runs `git rev-parse` and `git status --porcelain` in the folder to say what will happen.
 - Runs `sh` in the pair folder to list `.coderwriter/`, to add `.coderwriter/` to
   `.git/info/exclude`, and to write a team round's combined `review-<n>.md`.
 - The Usage panel runs `python3` to read `~/.claude/projects/**/*.jsonl` and

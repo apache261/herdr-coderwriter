@@ -3,7 +3,7 @@
 // shared("coderwriter.pairs") keyed by the pair's tab id, so the bar and the pane
 // headers (and a reload) see the same thing.
 import { RELAY_PY } from "./relay.js";
-import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTextFile, home, openOverlay } from "herdr";
+import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTextFile, home, appHome, openOverlay } from "herdr";
 
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
@@ -13,7 +13,7 @@ export const CMD = "cmd";
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", pm: "claude", ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", pm: "claude", worktree: true, turnLimit: 30, ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -166,7 +166,11 @@ async function ready(tab, g, address, role) {
 
 // Wait until the agent stops working. Blocked means it needs the person: keep
 // waiting (politely) until they answer.
-async function settle(tab, g, address, role) {
+// The pair's time limit for one turn (p.turnLimit minutes, 0: none) counts working time
+// only: while the agent waits for you ("blocked") the clock starts again. Over the limit,
+// the job stops with a note; the agent itself goes on in its pane.
+async function settle(tab, g, address, role, since = Date.now()) {
+  const limit = (pair(tab)?.turnLimit ?? 0) * 60000;
   for (;;) {
     if (gen[tab] !== g) throw new Cancelled();
     const s = status(address);
@@ -174,11 +178,19 @@ async function settle(tab, g, address, role) {
     if (s.status === "blocked") {
       update(tab, { note: `The ${role} needs you` });
       await sleep(2000);
+      since = Date.now();
       continue;
     }
     if (s.status !== "working") return;
+    const left = limit ? limit - (Date.now() - since) : Infinity;
+    if (left <= 0) {
+      notify({ title: `coderwriter: the ${role} is taking long`, body: `Over ${limit / 60000} min on one turn: paused. Its pane shows what it's doing.`,
+        level: "warning", action: { name: "tab.select", args: { id: tab } } });
+      throw new Error(`The ${role} worked over ${limit / 60000} min on one turn: paused (it goes on in its pane; Review or Feedback carry on)`);
+    }
     // `ended` means the wait ended; `reason: "exit"` means the program did.
-    const w = await hcJson(["wait", "--json", "--timeout", "540", address], 600000);
+    const secs = String(Math.max(5, Math.min(540, Math.ceil(left / 1000))));
+    const w = await hcJson(["wait", "--json", "--timeout", secs, address], 600000);
     if (w.reason === "exit") throw new Error(`The ${role} (${address}) exited`);
   }
 }
@@ -186,11 +198,13 @@ async function settle(tab, g, address, role) {
 // Paste a message, press Enter and wait for that turn to end.
 async function say(tab, g, address, role, text) {
   await ready(tab, g, address, role);
-  const r = await hcJson(["send", "--wait", "--json", "--timeout", "540", address, text], 600000);
+  const since = Date.now(), limit = (pair(tab)?.turnLimit ?? 0) * 60;
+  const secs = String(limit ? Math.max(5, Math.min(540, limit)) : 540);
+  const r = await hcJson(["send", "--wait", "--json", "--timeout", secs, address, text], 600000);
   if (r.started === false) throw new Error(`The ${role} did not take the message: ${r.reason ?? "not started"}`);
   if (r.wait?.reason === "exit") throw new Error(`The ${role} (${address}) exited`);
   if (gen[tab] !== g) throw new Cancelled();
-  await settle(tab, g, address, role);
+  await settle(tab, g, address, role, since);
 }
 
 // ---- review skills ----------------------------------------------------------------
@@ -564,12 +578,14 @@ async function afterApproval(tab, g) {
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
   await say(tab, g, roleOf(p, "pm").t, "pm", reportBrief(p));
   update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
-  notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.`,
+  notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.${worktreeNote(p)}`,
     level: "success", action: { name: "tab.select", args: { id: tab } } });
   askAudit(tab);
   return "done";
 }
 const planRunning = (p) => Boolean(p?.plan?.approved && !p.plan.done);
+// Where the work is, for the "done" toasts of a pair in its own worktree.
+const worktreeNote = (p) => (p.worktree ? ` It's on branch ${p.worktree.branch}, in ${p.worktree.path}.` : "");
 
 // The Plan dialog's answers (through the bar). A job still waiting for the plan gives way.
 function interruptWait(tab) {
@@ -815,7 +831,7 @@ async function loop(tab, g) {
     }
     if (verdict === "approved") {
       update(tab, { auto: false, phase: "approved", note: `Approved in round ${p.round}` });
-      notify({ title: "coderwriter: approved", body: `${p.task || "The change"} — approved in round ${p.round}`, level: "success", action: { name: "tab.select", args: { id: tab } } });
+      notify({ title: "coderwriter: approved", body: `${p.task || "The change"} — approved in round ${p.round}.${worktreeNote(p)}`, level: "success", action: { name: "tab.select", args: { id: tab } } });
       return;
     }
     if (verdict !== "changes") {
@@ -886,10 +902,37 @@ async function excludeReviews(folder, machine) {
   await exec("sh", ["-c", script], { cwd: folder, ...(machine ? { on: machine } : {}) }).catch(() => null);
 }
 
+// ---- worktrees -------------------------------------------------------------------
+// A pair or team can work in its own git worktree, so your working copy is never touched:
+// a new branch cw/<task>-<id> from the last commit, checked out where Herdr's own New
+// worktree puts them, <worktrees.directory>/<repo>/<branch> (settings.json; default
+// ~/.herdr/worktrees), on the pair's machine. coderwriter never removes one: the work in it
+// is uncommitted. Herdr's Remove worktree does that once you've taken what you want.
+const ADD_WORKTREE = 'dir="$1"; case "$dir" in "~") dir="$HOME" ;; "~/"*) dir="$HOME/${dir#"~/"}" ;; esac; ' +
+  'top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not a git repository" >&2; exit 3; }; ' +
+  'path="$dir/$(basename "$top")/$2"; git -C "$top" worktree add -q -b "$3" "$path" HEAD >&2 || exit 1; printf "%s" "$path"';
+export async function makeWorktree(folder, machine, task) {
+  let dir = "~/.herdr/worktrees";
+  try { dir = JSON.parse((await readTextFile(`${appHome()}/settings.json`)) ?? "{}")?.worktrees?.directory || dir; } catch { /* default */ }
+  const words = (task ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean).slice(0, 4).join("-") || "work";
+  const branch = `cw/${words}-${Math.random().toString(16).slice(2, 6)}`;
+  const r = await exec("sh", ["-c", ADD_WORKTREE, "sh", dir, branch.replace(/\//g, "-"), branch], { cwd: folder, timeout: 600000, ...(machine ? { on: machine } : {}) });
+  if (r.code !== 0) throw new Error(`Could not make a worktree: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}`);
+  return { path: r.stdout.trim(), branch };
+}
+// What the dialog shows about a folder: a git repo or not, its branch, uncommitted files.
+export async function gitState(folder, machine) {
+  const r = await exec("sh", ["-c", 'git rev-parse --abbrev-ref HEAD 2>/dev/null || exit 3; git status --porcelain 2>/dev/null | wc -l'],
+    { cwd: folder, timeout: 10000, ...(machine ? { on: machine } : {}) }).catch(() => null);
+  if (!r || r.code !== 0) return { repo: false, branch: null, dirty: 0 };
+  const [branch, n] = r.stdout.trim().split("\n");
+  return { repo: true, branch, dirty: Number(n) || 0 };
+}
+
 // No space open: make one in `folder` and wait for it to show up.
-export async function openSpace(folder) {
+export async function openSpace(folder, machine = null) {
   const before = new Set(spaces().map((s) => s.id));
-  run("space.new", { folder });
+  run("space.new", { folder, ...(machine ? { machine } : {}) });
   for (let i = 0; i < 40; i++) {
     const made = spaces().find((s) => !before.has(s.id));
     if (made) return made;
@@ -924,7 +967,7 @@ async function arrangeTeam(w, r, tt, pm) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, max, auto, lens = false, team = false }) {
+export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, max, auto, lens = false, team = false, worktree = null, turnLimit = 30 }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -952,7 +995,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
     ...(team ? { stages: teamStageIds(tt), roles } : {}),
-    round: 0, max, auto, lens, kind: team ? "team" : "pair", verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
+    round: 0, max, auto, lens, kind: team ? "team" : "pair", worktree, turnLimit, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
   // Round 0: the files before the writer touches them (no-op outside a git repo).
   await checkpoint(tab, 0);
