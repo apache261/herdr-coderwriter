@@ -169,6 +169,17 @@ export class NewPair {
             .child(team ? "A team: the PM plans the task with you; then for each subtask the coder writes, the tester tests, the reviewer checks quality and security, round after round. Nothing is committed."
               : "A writer makes the change and leaves it uncommitted; a reviewer reviews the uncommitted diff, round after round.")))
         .child(v_flex().gap(6)
+          .child(this.label(t, "Folder: where the agents work"))
+          .child(h_flex().id("folder").h(30).px(10).gap(7).items_center().rounded(7).border_1().border_color(t.border).bg(t.background)
+            .cursor_pointer().hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => cx.spawn(async (cx) => {
+              const picked = await pickFolder({ prompt: team ? "Use for the team" : "Use for the pair" });
+              if (picked) { this.folder = picked; cx.notify(); }
+            }))
+            .child(svg(I("folder")).size(13).text_color(t.dim))
+            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(tilde(this.folder)))
+            .child(div().flex_none().text_size(11.5).text_color(t.dim).child("Change…"))))
+        .child(v_flex().gap(6)
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
           .child(div().text_size(11).text_color(t.dim).child(team ? "Leave it empty to tell the PM yourself, in its pane." : "Leave it empty to type the task into the writer yourself.")))
@@ -178,17 +189,6 @@ export class NewPair {
             () => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } })))
           .child(this.link(t, "np-models", "cpu", "Custom models…",
             () => openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }))))
-        .child(v_flex().gap(6)
-          .child(this.label(t, "Folder"))
-          .child(h_flex().id("folder").h(30).px(10).gap(7).items_center().rounded(7).border_1().border_color(t.border).bg(t.background)
-            .cursor_pointer().hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => cx.spawn(async (cx) => {
-              const picked = await pickFolder({ prompt: "Use for the pair" });
-              if (picked) { this.folder = picked; cx.notify(); }
-            }))
-            .child(svg(I("folder")).size(13).text_color(t.dim))
-            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(tilde(this.folder)))
-            .child(div().flex_none().text_size(11.5).text_color(t.dim).child("Change…"))))
         .child(h_flex().gap(10).items_center()
           .child(this.label(t, "Rounds"))
           .child(h_flex().h(28).px(4).gap(2).items_center().flex_none().rounded(7).border_1().border_color(t.border).bg(t.background)
