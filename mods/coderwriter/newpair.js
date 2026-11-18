@@ -122,7 +122,7 @@ export class NewPair {
     const keys = [...new Set([pr.writer, pr.reviewer].map((k) => (P.isCustom(k) ? "codex" : k)))];
     const danger = keys.some(isDangerous);
     const setMax = (n) => P.setPrefs({ max: Math.max(1, Math.min(10, n)) });
-    const auto = Boolean(pr.auto), lens = Boolean(pr.lens);
+    const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team);
 
     return v_flex().size_full().bg(t.popover).text_size(12.5).text_color(t.foreground)
       .child(v_flex().flex_1().min_h(0).gap(14).px(18).pt(16).pb(14)
@@ -160,6 +160,14 @@ export class NewPair {
             .child(div().px(4).child(String(pr.max)))
             .child(this.iconButton(t, "max-plus", "plus", () => setMax(pr.max + 1), pr.max < 10)))
           .child(div().flex_1())
+          .child(h_flex().id("team").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
+            .border_1().border_color(team ? t.accent : t.border).bg(team ? t.selected : t.background)
+            .cursor_pointer().hover((s) => s.bg(t.hover))
+            .tooltip("Each round runs every check (tests, then review) and sends all failures to the writer in one note")
+            .on_click((_e, cx) => { P.setPrefs({ team: !team }); cx.notify(); })
+            .child(svg(I("repeat")).size(13).text_color(team ? t.accent : t.dim))
+            .child("Team")
+            .when(team, (el) => el.child(svg(I("check")).size(12).text_color(t.accent))))
           .child(h_flex().id("lens").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
             .border_1().border_color(lens ? t.accent : t.border).bg(lens ? t.selected : t.background)
             .cursor_pointer().hover((s) => s.bg(t.hover))

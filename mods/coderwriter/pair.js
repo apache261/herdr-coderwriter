@@ -11,7 +11,7 @@ export const AGENTS = ["claude", "codex"];
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -221,24 +221,30 @@ export function askAudit(tab) {
   openOverlay({ mod: "coderwriter", kind: "dialog", width: 560, height: 440, props: { role: "audit", tab } });
 }
 
-export function writerBrief(task) {
+export function writerBrief(task, team = false) {
+  if (team) return `${task}\n\n(You are the CODER in a team. Make the change in this folder and leave it uncommitted. ` +
+    `When you finish, and after every fix, write what you changed and why, and how you checked it, to ${CODER_NOTES}. ` +
+    `Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.)`;
   return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted. ` +
     `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.)`;
 }
-export function reviewBrief(p, round, lens = null) {
-  const file = `${REVIEW_DIR}/review-${round}.md`;
+// out: where the review goes and its verdict words (a team stage writes PASS / FAIL).
+export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/review-${round}.md`, ok: "APPROVED", no: "CHANGES_REQUESTED" }) {
+  const file = out.file;
   const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], prev = cp[round - 1];
   const snaps = !now ? "" : round > 1 && prev
     ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check your round ${round - 1} findings were addressed.` +
       (base ? ` The whole change is \`git diff ${base} ${now}\`.` : "")
     : base ? ` The whole change is \`git diff ${base} ${now}\` (snapshots that include untracked files).` : "";
   const t = p.tests;
-  const tests = t?.state === "pass" && t.round === round ? ` The tests (\`${t.cmd}\`) pass.` : "";
+  const tests = t?.round !== round ? "" : t.state === "pass" ? ` The tests (\`${t.cmd}\`) pass.`
+    : t.state === "fail" ? ` The tests (\`${t.cmd}\`) fail; that is reported to the writer already, so don't repeat it.` : "";
+  const notes = p.kind === "team" ? ` The writer's own notes on the change: ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` : "";
   return `You are the REVIEWER in a writer/reviewer pair (round ${round}).` +
     (p.task ? ` The writer's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
-    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests +
+    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
-    ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: APPROVED" or "VERDICT: CHANGES_REQUESTED",` +
+    ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: ${out.ok}" or "VERDICT: ${out.no}",` +
     ` then numbered findings, most important first, each with the file and what to change. Then stop.`;
 }
 // An audit round: the selected audit skills over the whole repository, one review file.
@@ -263,6 +269,13 @@ export function feedbackBrief(p) {
     ? ` These were raised in round ${round - 1} too and are still open: ${p.repeats.map((f) => `"${short(f, 140)}"`).join("; ")}. ` +
       `Fix them properly this time, or explain why you won't.`
     : "";
+  if (p.kind === "team") {
+    const failed = Object.entries(p.stageResults ?? {}).filter(([, r]) => r === "fail").map(([id]) => STAGES[id]?.name ?? id);
+    return restoredNote(p) + `Round ${round}: ${failed.length ? failed.join(", ") + " failed" : "changes requested"}. ` +
+      `Everything to fix is in ${REVIEW_DIR}/review-${round}.md (each check's full report is in ${REVIEW_DIR}/round-${round}/). ` +
+      `Address every finding (push back in your reply if you disagree with one).${again} ` +
+      `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.`;
+  }
   return restoredNote(p) + `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
     `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.`;
 }
@@ -279,6 +292,110 @@ async function verdictOf(p, round) {
   const verdict = !m ? "unknown" : /^APPROVED$/i.test(m[1]) ? "approved" : "changes";
   const findings = findingsOf(text).length;
   return { verdict, text, summary: verdict === "approved" ? "Approved" : verdict === "changes" ? `${findings} finding${findings === 1 ? "" : "s"}` : "No verdict line" };
+}
+
+// ---- team pipeline ----------------------------------------------------------------
+// A team (p.kind === "team") checks a round with a pipeline of stages, run one after
+// another and all of them even when one fails. Each stage reports PASS or FAIL with
+// numbered findings in .coderwriter/round-<n>/<stage>.md; coderwriter folds the reports
+// into .coderwriter/review-<n>.md (failures in full, passes as one line), so the Reviews
+// panel, Feedback, repeat detection and snapshots work exactly as for a pair.
+export const CODER_NOTES = `${REVIEW_DIR}/coder.md`;
+export const STAGES = {
+  tests: { name: "Tests", run: testsStage },          // the folder's test command (no agent)
+  review: { name: "Review", role: "reviewer" },       // the reviewer agent, PASS / FAIL
+};
+const MAX_SECTION = 20000; // characters of a failed stage's report copied into review-<n>.md
+export function teamStages(p) {
+  return (p.stages ?? ["tests", "review"]).filter((id) => STAGES[id] && (id !== "tests" || testCommand(p.folder)));
+}
+// The agent playing a role: the pair's writer / reviewer, or one of p.roles (tester, pm…).
+const roleOf = (p, role) => p.roles?.[role] ?? p[role] ?? null;
+
+async function sh(p, script, args = [], timeout = 30000) {
+  return exec("sh", ["-c", script, "sh", ...args], { cwd: p.folder, timeout, ...where(p) });
+}
+// A stage report: pass / fail, or missing / unknown (no file, no verdict line).
+async function readStage(p, rel) {
+  let text = null;
+  try { text = await readTextFile(join(p.folder, rel), where(p)); } catch { text = null; }
+  const m = /VERDICT:\s*(PASS|FAIL|APPROVED|CHANGES[_ ]REQUESTED)/i.exec(text ?? "");
+  const state = text == null ? "missing" : !m ? "unknown" : /^(PASS|APPROVED)$/i.test(m[1]) ? "pass" : "fail";
+  return { state, text, file: rel };
+}
+
+async function testsStage(tab, g, round) {
+  const pass = await runTests(tab, round);
+  const t = pair(tab).tests ?? {};
+  if (pass) return { state: "pass", text: null, file: t.file };
+  const tail = await sh(pair(tab), 'tail -n 60 "$1" 2>/dev/null', [t.file]).catch(() => null);
+  const why = t.error ?? `exit code ${t.code}`;
+  return { state: "fail", file: t.file,
+    text: `1. The test command \`${t.cmd}\` fails (${why}); full output in ${t.file}. Fix the code, not the tests.\n\n` +
+      ((tail?.stdout ?? "").trim() ? "Last lines of the output:\n\n```\n" + tail.stdout.trimEnd() + "\n```" : "It printed nothing.") };
+}
+
+async function agentStage(tab, g, round, id, found) {
+  const p = pair(tab), s = STAGES[id], who = roleOf(p, s.role);
+  if (!who?.t) return { state: "missing", text: null, file: null, why: `no ${s.role} agent` };
+  const file = `${REVIEW_DIR}/round-${round}/${id}.md`;
+  await sh(p, 'mkdir -p "$(dirname "$1")" && rm -f "$1"', [file]);
+  const brief = id === "review" ? reviewBrief(p, round, p.lens ? found.lens : null, { file, ok: "PASS", no: "FAIL" }) : s.brief(p, round, file, found);
+  await say(tab, g, who.t, s.role, brief);
+  return readStage(pair(tab), file);
+}
+
+function combine(round, results) {
+  const bad = results.filter((r) => r.state === "missing" || r.state === "unknown");
+  const failed = results.filter((r) => r.state === "fail");
+  const head = bad.length ? "VERDICT: INCOMPLETE" : failed.length ? "VERDICT: CHANGES_REQUESTED" : "VERDICT: APPROVED";
+  const mark = { pass: "✓", fail: "✗", missing: "?", unknown: "?" };
+  const line = results.map((r) => `${STAGES[r.id].name} ${mark[r.state]}`).join(" · ");
+  const parts = [head, "", `Round ${round}: ${line}`];
+  for (const r of [...failed, ...bad, ...results.filter((x) => x.state === "pass")]) {
+    const name = STAGES[r.id].name, at = r.file ? ` (${r.file})` : "";
+    if (r.state === "pass") { parts.push("", `## ${name}: PASS${at}`); continue; }
+    if (r.state !== "fail") { parts.push("", `## ${name}: no result${at}`, "", r.state === "missing" ? `No report${r.why ? `: ${r.why}` : ""}.` : "The report has no VERDICT line."); continue; }
+    let body = (r.text ?? "").replace(/^.*VERDICT:.*$/m, "").trim();
+    if (body.length > MAX_SECTION) body = body.slice(0, MAX_SECTION) + `\n\n… (cut here; the rest is in ${r.file})`;
+    parts.push("", `## ${name}: FAIL${at}`, "", body);
+  }
+  return parts.join("\n") + "\n";
+}
+
+// One team round: snapshot, the coder's notes, every stage, then review-<n>.md.
+async function teamRound(tab, g) {
+  let p = pair(tab);
+  await settle(tab, g, p.writer.t, "writer");
+  const round = (p.round ?? 0) + 1;
+  await checkpoint(tab, round);
+  p = pair(tab);
+  const ids = teamStages(p);
+  await sh(p, 'mkdir -p "$1" && if [ -f "$2" ]; then cp "$2" "$1/coder.md"; fi', [`${REVIEW_DIR}/round-${round}`, CODER_NOTES]).catch(() => null);
+  const found = p.lens ? await findSkills(p.folder, p.machine) : {};
+  if (p.lens && !found.lens) notify({ title: "coderwriter: Ponytail review not installed", body: `Reviewing without it. ${SKILLS.lens.install}`, level: "warning" });
+  update(tab, { round, phase: "reviewing", verdict: null, repeats: [], stage: null, stageResults: {}, testFixes: 0,
+    note: `Round ${round}: ${ids.map((id) => STAGES[id].name).join(" → ")}` });
+  const results = [];
+  for (const id of ids) {
+    update(tab, { stage: id, note: `Round ${round}: ${STAGES[id].name}` });
+    const r = STAGES[id].run ? await STAGES[id].run(tab, g, round) : await agentStage(tab, g, round, id, found);
+    if (gen[tab] !== g) throw new Cancelled();
+    results.push({ id, ...r });
+    update(tab, { stageResults: { ...(pair(tab).stageResults ?? {}), [id]: r.state } });
+  }
+  const file = `${REVIEW_DIR}/review-${round}.md`;
+  const w = await sh(pair(tab), 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1"', [file, combine(round, results)]);
+  if (w.code !== 0) throw new Error(`Could not write ${file}: ${(w.stderr || "").trim()}`);
+  const v = await verdictOf(pair(tab), round);
+  let repeats = [];
+  if (v.verdict === "changes" && round > 1) repeats = repeatedFindings((await verdictOf(pair(tab), round - 1)).text, v.text);
+  const summary = results.map((r) => `${STAGES[r.id].name} ${r.state === "pass" ? "✓" : r.state === "fail" ? "✗" : "?"}`).join(" · ");
+  const again = repeats.length ? ` · ${repeats.length} repeated from round ${round - 1}` : "";
+  const unsure = v.verdict === "unknown" ? " · a check gave no result" : "";
+  update(tab, { phase: "reviewed", stage: null, verdict: v.verdict, repeats, note: `Round ${round}: ${summary}${again}${unsure}` });
+  if (v.verdict === "approved") askAudit(tab);
+  return v.verdict;
 }
 
 // ---- repeated findings ----------------------------------------------------------
@@ -480,7 +597,7 @@ async function loop(tab, g) {
   for (;;) {
     let p = pair(tab);
     if (!p?.auto || gen[tab] !== g) return;
-    const verdict = await reviewRound(tab, g);
+    const verdict = p.kind === "team" ? await teamRound(tab, g) : await reviewRound(tab, g);
     p = pair(tab);
     if (verdict === "tests") {
       if ((p.testFixes ?? 0) >= TEST_FIX_MAX) {
@@ -497,7 +614,7 @@ async function loop(tab, g) {
       return;
     }
     if (verdict !== "changes") {
-      update(tab, { auto: false, note: `Round ${p.round}: the review has no verdict line; loop paused` });
+      update(tab, { auto: false, note: p.kind === "team" ? `${p.note}; loop paused` : `Round ${p.round}: the review has no verdict line; loop paused` });
       notify({ title: "coderwriter", body: `Round ${p.round}: no VERDICT line in the review, loop paused`, level: "warning" });
       return;
     }
@@ -517,7 +634,7 @@ async function loop(tab, g) {
   }
 }
 
-export function review(tab) { return job(tab, (g) => reviewRound(tab, g)); }
+export function review(tab) { return job(tab, (g) => (pair(tab)?.kind === "team" ? teamRound(tab, g) : reviewRound(tab, g))); }
 export function audit(tab, kinds) {
   const ok = (kinds ?? []).filter((k) => AUDITS.includes(k));
   if (!ok.length) return;
@@ -571,7 +688,7 @@ export async function openSpace(folder) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, max, auto, lens = false }) {
+export async function start({ space, folder, task, writer, reviewer, max, auto, lens = false, team = false }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -593,7 +710,7 @@ export async function start({ space, folder, task, writer, reviewer, max, auto, 
     tab, space: space.id, machine, folder, task,
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
-    round: 0, max, auto, lens, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
+    round: 0, max, auto, lens, kind: team ? "team" : "pair", verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
   // Round 0: the files before the writer touches them (no-op outside a git repo).
   await checkpoint(tab, 0);
@@ -608,7 +725,7 @@ export async function start({ space, folder, task, writer, reviewer, max, auto, 
   await job(tab, async (g) => {
     if (task) {
       update(tab, { phase: "writing", note: "Writer is working" });
-      await say(tab, g, w, "writer", writerBrief(task));
+      await say(tab, g, w, "writer", writerBrief(task, team));
       update(tab, { phase: "written", note: "Writer finished: send to review" });
     } else {
       update(tab, { phase: "idle", note: "Type the task into the writer" });

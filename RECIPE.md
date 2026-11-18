@@ -122,6 +122,15 @@ and dark themes):
   (warning). The limit only stops Auto; Review and Feedback by hand can go past it.
   **Stop** ends the running job and turns Auto off. A Herdr reload pauses running pairs and
   says so.
+- **Team** (`kind: "team"`, the New pair dialog's Team toggle): a round snapshots the files,
+  copies the writer's `.coderwriter/coder.md` to `round-<n>/coder.md`, then runs each stage of
+  `p.stages` (default `tests`, `review`; `tests` only when the folder has a test command) in
+  order, all of them. A stage writes `round-<n>/<stage>.md`, first line `VERDICT: PASS` or
+  `VERDICT: FAIL`, then numbered findings (`tests` is coderwriter's own: the command's result
+  and its last 60 lines). coderwriter writes `review-<n>.md`: `VERDICT: APPROVED`,
+  `CHANGES_REQUESTED` or `INCOMPLETE` (a stage wrote no report or no verdict: Auto pauses),
+  a `Tests ✓ · Review ✗` line, failed stages in full (cut at 20,000 characters) and passed
+  ones as one line. Feedback names the failed stages and points the writer at that file.
 - **Ponytail review** (toggle; the next pair's in the bar and New pair, the shown pair's as an
   icon chip): the review message adds "read <path to ponytail-review/SKILL.md> and follow its
   method, but write the file in the format below". Not installed: a warning toast with the

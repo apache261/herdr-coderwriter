@@ -18,6 +18,11 @@ Changes panels.
   back to any round (undoable).
 - **Stuck-loop detection**: a finding that comes back unchanged from the round before pauses
   Auto, and Feedback sends it back to the writer with a nudge.
+- **Team** (preview, toggle in New pair): every round runs all the checks one after another
+  (the test command, then the reviewer), even when one fails, and sends every failure to the
+  writer in one note. Each check reports PASS or FAIL in `.coderwriter/round-<n>/`; the writer
+  keeps its own notes in `.coderwriter/coder.md`. Tester, Quality, Security and a project
+  manager come next.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.

@@ -125,7 +125,7 @@ class Bar {
         if (!req) { this.input.set_value(""); this.task = ""; }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }
