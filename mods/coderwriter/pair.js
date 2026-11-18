@@ -241,7 +241,8 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
   const tests = t?.round !== round ? "" : t.state === "pass" ? ` The tests (\`${t.cmd}\`) pass.`
     : t.state === "fail" ? ` The tests (\`${t.cmd}\`) fail; that is reported to the writer already, so don't repeat it.` : "";
   const notes = p.kind === "team" ? ` The writer's own notes on the change: ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` : "";
-  return `You are the REVIEWER in a writer/reviewer pair (round ${round}).` +
+  const who = p.kind === "team" ? `You are the REVIEWER in a team (round ${round}).` : `You are the REVIEWER in a writer/reviewer pair (round ${round}).`;
+  return who + (out.focus ?? "") +
     (p.task ? ` The writer's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
     ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
@@ -306,7 +307,10 @@ export const CODER_NOTES = `${REVIEW_DIR}/coder.md`;
 export const STAGES = {
   tester: { name: "Tester", role: "tester", brief: testerBrief }, // writes and runs the tests
   tests: { name: "Tests", run: testsStage },          // the folder's test command (no agent)
-  review: { name: "Review", role: "reviewer" },       // the reviewer agent, PASS / FAIL
+  quality: { name: "Quality", role: "reviewer", brief: qualityBrief },   // Ponytail's review, PASS / FAIL
+  security: { name: "Security", role: "reviewer", brief: securityBrief }, // this change only, PASS / FAIL
+  review: { name: "Review", role: "reviewer", brief: (p, round, file, found) =>  // teams from before the split
+    reviewBrief(p, round, p.lens ? found.lens : null, { file, ok: "PASS", no: "FAIL" }) },
   guard: { name: "Test files" },                      // the coder edited tests (computed, not run)
 };
 // Test files by their usual names: tests/, test/, __tests__/, spec/ folders, *.test.* / *.spec.*,
@@ -320,7 +324,7 @@ async function coderTouchedTests(p, round) {
   return (r?.stdout ?? "").split("\n").filter((f) => f && TEST_PATH.test(f));
 }
 // The tester goes first so the test command, run next, includes the tests it wrote.
-export const teamStageIds = (tester) => (tester ? ["tester", "tests", "review"] : ["tests", "review"]);
+export const teamStageIds = (tester) => [...(tester ? ["tester"] : []), "tests", "quality", "security"];
 const MAX_SECTION = 20000; // characters of a failed stage's report copied into review-<n>.md
 export function teamStages(p) {
   return (p.stages ?? ["tests", "review"]).filter((id) => STAGES[id] && (id !== "tests" || testCommand(p.folder)));
@@ -351,6 +355,22 @@ async function testsStage(tab, g, round) {
       ((tail?.stdout ?? "").trim() ? "Last lines of the output:\n\n```\n" + tail.stdout.trimEnd() + "\n```" : "It printed nothing.") };
 }
 
+// Quality and Security are the reviewer's two checks, one message each, in that order.
+export function qualityBrief(p, round, file, found) {
+  return reviewBrief(p, round, found.lens, { file, ok: "PASS", no: "FAIL",
+    focus: " This is the QUALITY check: does the change do what the task asks, correctly (edge cases, errors, callers it breaks)," +
+      " and is it clear, lean and in the style of the codebase? A security check follows and the tester owns the tests: leave those to them." });
+}
+export function securityBrief(p, round, file, found) {
+  return reviewBrief(p, round, null, { file, ok: "PASS", no: "FAIL",
+    focus: " This is the SECURITY check, of this change only (the quality check is done): untrusted input reaching SQL, a shell," +
+      " file paths, templates or HTML (injection, path traversal, XSS); authentication and authorization; secrets in code, logs or errors;" +
+      " unsafe deserialization; SSRF; CSRF; weak or home-made crypto; new dependencies; data leaking to the wrong user." +
+      " Report only real issues, each with a concrete way to exploit it; no style, no maybes. PASS when there is none." +
+      (found.security ? ` Read ${found.security} (Cloudflare's security-audit skill) for its principles and anti-patterns, but don't run` +
+        ` its phases: this is a review of the change, and the full audit is offered once the work is approved.` : "") });
+}
+
 export function testerBrief(p, round, file) {
   const touched = (p.touchedTests ?? []).length
     ? ` The coder changed test files since your last run (not allowed): ${p.touchedTests.join(", ")}. Check them: keep what is right, put back what isn't.` : "";
@@ -377,7 +397,7 @@ async function agentStage(tab, g, round, id, found) {
   if (!who?.t) return { state: "missing", text: null, file: null, why: `no ${s.role} agent` };
   const file = `${REVIEW_DIR}/round-${round}/${id}.md`;
   await sh(p, 'mkdir -p "$(dirname "$1")" && rm -f "$1"', [file]);
-  const brief = id === "review" ? reviewBrief(p, round, p.lens ? found.lens : null, { file, ok: "PASS", no: "FAIL" }) : s.brief(p, round, file, found);
+  const brief = s.brief(p, round, file, found);
   await say(tab, g, who.t, s.role, brief);
   return readStage(pair(tab), file);
 }
@@ -411,8 +431,12 @@ async function teamRound(tab, g) {
   await sh(p, 'mkdir -p "$1" && if [ -f "$2" ]; then cp "$2" "$1/coder.md"; fi', [`${REVIEW_DIR}/round-${round}`, CODER_NOTES]).catch(() => null);
   const touched = ids.includes("tester") ? await coderTouchedTests(p, round) : [];
   update(tab, { touchedTests: touched });
-  const found = p.lens ? await findSkills(p.folder, p.machine) : {};
-  if (p.lens && !found.lens) notify({ title: "coderwriter: Ponytail review not installed", body: `Reviewing without it. ${SKILLS.lens.install}`, level: "warning" });
+  const found = await findSkills(p.folder, p.machine);
+  const wantsLens = ids.includes("quality") || (ids.includes("review") && p.lens);
+  if (wantsLens && !found.lens && !p.lensWarned) {
+    notify({ title: "coderwriter: Ponytail review not installed", body: `The quality check runs without it. ${SKILLS.lens.install}`, level: "warning" });
+    update(tab, { lensWarned: true });
+  }
   update(tab, { round, phase: "reviewing", verdict: null, repeats: [], stage: null, stageResults: touched.length ? { guard: "fail" } : {}, testFixes: 0,
     note: `Round ${round}: ${ids.map((id) => STAGES[id].name).join(" → ")}` });
   const results = touched.length ? [{ id: "guard", state: "fail", file: null,

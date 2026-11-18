@@ -126,8 +126,13 @@ and dark themes):
   Codex by default): three agents, the tester's pane labelled `coderwriter.role=tester`
   (TESTER chip, ansi3; the writer's chip reads CODER). A round snapshots the files, copies the
   writer's `.coderwriter/coder.md` to `round-<n>/coder.md`, then runs each stage of `p.stages`
-  (`tester`, `tests`, `review`; `tests` only when the folder has a test command) in order, all
-  of them. The tester writes or updates unit and functional tests, edits only test files, runs
+  (`tester`, `tests`, `quality`, `security`; `tests` only when the folder has a test command) in
+  order, all of them. Quality and Security are two messages to the one reviewer agent: Quality
+  follows `ponytail-review` when found (a warning toast once per team when not); Security
+  reviews only the change against a fixed list (injection, path traversal, XSS, auth, secrets,
+  deserialization, SSRF, CSRF, crypto, dependencies, data exposure), real issues only, and
+  reads Cloudflare's `SKILL.md` for principles when found without running its phases. Teams
+  made before the split keep their single `review` stage. The tester writes or updates unit and functional tests, edits only test files, runs
   them and the suite, and reports "Tests written:", "Ran:" and numbered findings. After it, the
   files are snapshotted again (`round-<n>-tested`); next round, test files (by name: `tests/`,
   `test/`, `__tests__/`, `spec/`, `*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `*_test.py`)

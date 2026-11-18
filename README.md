@@ -21,10 +21,12 @@ Changes panels.
 - **Team** (preview, toggle in New pair): a third agent, the **Tester**, joins the coder
   (the writer) and the reviewer. Every round runs all the checks one after another, even when
   one fails: the tester writes and runs unit and functional tests, then the test command, then
-  the reviewer; every failure goes to the coder in one note. Test files are the tester's: a
-  coder that changes one gets it back as a finding. Each check reports PASS or FAIL in
-  `.coderwriter/round-<n>/`; the coder keeps its own notes in `.coderwriter/coder.md`.
-  Separate Quality and Security checks and a project manager come next.
+  the reviewer's **Quality** check (with Ponytail's `ponytail-review` when installed) and its
+  **Security** check of the change (with the principles of Cloudflare's skill when installed;
+  the full audit is offered once approved); every failure goes to the coder in one note. Test
+  files are the tester's: a coder that changes one gets it back as a finding. Each check
+  reports PASS or FAIL in `.coderwriter/round-<n>/`; the coder keeps its own notes in
+  `.coderwriter/coder.md`. A project manager comes next.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.

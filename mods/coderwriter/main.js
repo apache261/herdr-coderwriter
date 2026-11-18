@@ -295,7 +295,7 @@ class Bar {
         .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(this.verdictPill(t, p) ?? div())
       .child(this.testsChip(t, p))
-      .child(this.lensChip(t, p))
+      .when(p?.kind !== "team", (el) => el.child(this.lensChip(t, p))) // a team's quality check always uses Ponytail
       .child(this.rounds(t, p))
       .child(this.button(t, "to-review", "arrow-right", "Review", () => P.review(p.tab), { enabled: !busy }))
       .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && ((p.round ?? 0) > 0 || p.phase === "tests_failed") }))

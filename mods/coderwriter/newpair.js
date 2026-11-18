@@ -166,7 +166,7 @@ export class NewPair {
           .child(h_flex().id("team").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
             .border_1().border_color(team ? t.accent : t.border).bg(team ? t.selected : t.background)
             .cursor_pointer().hover((s) => s.bg(t.hover))
-            .tooltip("A tester agent writes and runs the tests, then the test command and the reviewer; all failures go to the writer in one note")
+            .tooltip("Each round: the tester writes and runs tests, then the test command, then the reviewer's quality (Ponytail) and security checks; all failures go to the coder in one note")
             .on_click((_e, cx) => { P.setPrefs({ team: !team }); cx.notify(); })
             .child(svg(I("repeat")).size(13).text_color(team ? t.accent : t.dim))
             .child("Team")
