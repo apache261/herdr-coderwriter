@@ -1,13 +1,16 @@
 # coderwriter
 
-A Herdr layout for running two coding agents as a pair: a **writer** (Claude Code by
-default) makes the change and a **reviewer** (Codex by default) reviews the uncommitted
-diff, round after round, until it approves or a round limit is reached. Either side can also be a
-custom model on any OpenAI-compatible endpoint, run through Codex. A bar above the
-panes sets up and drives the pair, each pane's header says which role it plays, and side
-panels show the review rounds, the token usage of both agents and Codex's plan limits,
-next to Herdr's own Files and Changes panels. The spaces and agents sidebar stays on the
-left.
+A Herdr layout for running coding agents as a pair or a team. In a pair, a **writer**
+(Claude Code by default) makes the change and a **reviewer** (Codex by default) reviews the
+uncommitted diff, round after round, until it approves or a round limit is reached. In a
+team, a **PM** plans the task with you, and for each subtask a **Coder** writes, a **Tester**
+writes and runs the tests, and a **Reviewer** checks quality and security, every check every
+round, until all pass. Any role can be any agent Herdr knows, a custom model on an
+OpenAI-compatible endpoint (run through Codex), or a command line of your own. A bar above
+the panes drives the shown tab's pair or team (one dialog sets them up), each pane's header
+says which role it plays, and side panels show the review rounds, the token usage and the
+plans' limits, next to Herdr's own Files and Changes panels. The spaces and agents sidebar
+stays on the left.
 
 ![coderwriter](preview.png)
 
@@ -198,7 +201,7 @@ and dark themes):
   can use this model"), and when that fails `POST /chat/completions` ("Only Chat Completions
   works here", with what to do). Deleting a model removes its key file and puts writer or
   reviewer back to Claude / Codex if it was chosen.
-- **Usage** refreshes when shown and every 15 s; the bar's chip every 30 s. Codex's live
+- **Usage** refreshes when shown and every 15 s. Codex's live
   limits are asked of Codex at most every 2 minutes (the refresh button forces it); between
   those, or when that fails, the latest limits recorded in Codex's logs are used.
 - **Reviews** re-reads `.coderwriter/` every 5 s; clicking a round chip shows it.
