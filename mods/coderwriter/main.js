@@ -256,6 +256,41 @@ class Bar {
       { tip: cmd ? `Test gate: ${cmd}` : "Set a test command to run before each review", active: s === "fail" });
   }
 
+  // A team's flow, left to right: PM, Coder, then each check of the round, colored by
+  // state (working, passed, failed, waiting on you), with the subtask count once a plan runs.
+  teamStrip(t, p) {
+    const ok = t.done ?? t.ansi2;
+    const icons = { tester: "flask", tests: "terminal", quality: "glasses", security: "shield", review: "search", guard: "alert" };
+    const checking = ["reviewing", "auditing"].includes(p.phase);
+    const res = p.stageResults ?? {};
+    const steps = [];
+    if (p.roles?.pm) {
+      const s = ["planning", "reporting"].includes(p.phase) ? "active" : p.phase === "plan_ready" ? "you"
+        : p.plan?.approved ? "pass" : "pending";
+      steps.push({ id: "pm", icon: "list", name: "PM", s, tip: { active: p.phase === "reporting" ? "writing the report" : "planning", you: "plan ready: approve it", pass: "plan approved", pending: "" }[s] });
+    }
+    steps.push({ id: "coder", icon: "pen", name: "Coder", s: ["writing", "fixing"].includes(p.phase) ? "active" : (p.round ?? 0) > 0 || p.phase === "written" ? "pass" : "pending",
+      tip: ["writing", "fixing"].includes(p.phase) ? "working" : "" });
+    const ids = [...(res.guard ? ["guard"] : []), ...(p.stages ?? []).filter((id) => id !== "tests" || P.testCommand(p.folder))];
+    for (const id of ids) {
+      const r = res[id];
+      const s = checking && p.stage === id ? "active" : r === "pass" ? "pass" : r === "fail" ? "fail" : r ? "unknown" : "pending";
+      steps.push({ id, icon: icons[id] ?? "search", name: P.STAGES[id]?.name ?? id, s,
+        tip: { active: "checking", pass: `passed round ${p.round}`, fail: `failed round ${p.round}`, unknown: "no result", pending: "" }[s] });
+    }
+    const color = { active: t.working, pass: ok, fail: t.blocked, you: t.accent, unknown: t.dim, pending: t.dim };
+    const plan = p.plan?.approved && !p.plan.done ? `${p.plan.at + 1}/${p.plan.tasks.length}` : null;
+    return h_flex().id("team-strip").flex_none().gap(1).items_center()
+      .when(Boolean(plan), (el) => el.child(div().pr(5).text_size(11.3).font_semibold().text_color(t.muted).child(plan)))
+      .children(steps.flatMap((x, i) => [
+        ...(i ? [div().text_size(10).text_color(t.border).child("›")] : []),
+        div().id(`ts-${x.id}`).size(22).flex().items_center().justify_center().rounded(6)
+          .bg(x.s === "pending" ? t.background : color[x.s] + "22").border_1().border_color(x.s === "pending" ? t.border : color[x.s] + "88")
+          .tooltip(x.tip ? `${x.name}: ${x.tip}` : x.name)
+          .child(x.s === "active" ? svg(I("spinner")).size(12).text_color(color.active).spin(900) : svg(I(x.icon)).size(12).text_color(color[x.s])),
+      ]));
+  }
+
   verdictPill(t, p) {
     if (!p?.verdict) return null;
     const map = { approved: ["Approved", t.done ?? t.ansi2], changes: ["Changes requested", t.blocked], missing: ["No review file", t.dim], unknown: ["No verdict", t.dim] };
@@ -298,7 +333,7 @@ class Bar {
       .child(h_flex().flex_none().gap(6).items_center().max_w(200)
         .when(busy, (el) => el.child(svg(I("spinner")).size(12).flex_none().text_color(t.working).spin(900)))
         .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
-      .child(this.verdictPill(t, p) ?? div())
+      .child(p.kind === "team" ? this.teamStrip(t, p) : this.verdictPill(t, p) ?? div())
       .child(this.testsChip(t, p))
       .when(p?.kind !== "team", (el) => el.child(this.lensChip(t, p))) // a team's quality check always uses Ponytail
       .child(this.rounds(t, p))

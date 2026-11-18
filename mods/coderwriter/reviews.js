@@ -1,5 +1,7 @@
 // The Reviews side panel: the reviewer's rounds (.coderwriter/review-<n>.md) for
-// the shown pair, or for the focused pane's folder when the tab isn't a pair.
+// the shown pair, or for the focused pane's folder when the tab isn't a pair. For a team
+// it is the team's panel: per round the summary, the coder's notes and each check's own
+// report, and the PM's plan and report.
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, TextView } from "gpui-base";
 import { theme, spaces, panes, focused, exec, readTextFile, home } from "herdr";
@@ -26,6 +28,9 @@ export class Reviews {
     this.selected = null; // round number, null: the latest
     this.confirm = null;  // the restore asked for once (a second click does it)
     this.loading = false;
+    this.view = "summary"; // a team's view: summary, coder, a stage id, plan or report
+    this.extra = {};       // "<round>:<view>" → that file's text (null: not written)
+    this.names = new Set(); // what .coderwriter/ holds
     this.refresh(cx);
     cx.timer.every(5000, (cx) => this.refresh(cx));
   }
@@ -44,7 +49,7 @@ export class Reviews {
     if (this.loading) return;
     const { folder, on } = this.where();
     const key = JSON.stringify([folder, on]);
-    if (key !== this.key) { this.key = key; this.rounds = []; this.selected = null; }
+    if (key !== this.key) { this.key = key; this.rounds = []; this.selected = null; this.view = "summary"; this.extra = {}; }
     if (!folder) { cx.notify(); return; }
     this.loading = true;
     cx.spawn(async (cx) => {
@@ -58,11 +63,37 @@ export class Reviews {
           try { text = await readTextFile(join(folder, `${P.REVIEW_DIR}/review-${n}.md`), opts); } catch { text = null; }
           if (text != null) rounds.push({ n, text, verdict: verdictOf(text) });
         }
-        if (this.key === key) this.rounds = rounds;
+        if (this.key === key) {
+          this.rounds = rounds;
+          this.names = new Set((r.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean));
+          if (!rounds.length && this.view === "summary" && this.names.has("plan.md")) this.view = "plan"; // a team before its first round
+          if (this.view !== "summary") await this.loadView(folder, opts);
+        }
       } catch { /* folder gone or machine away: keep what we had */ }
       this.loading = false;
       cx.notify();
     });
+  }
+
+  // The file a team view shows for round n.
+  fileFor(view, n) {
+    if (view === "plan") return P.PLAN;
+    if (view === "report") return P.REPORT;
+    if (view === "tests") return `${P.REVIEW_DIR}/tests-${n}.txt`;
+    return `${P.REVIEW_DIR}/round-${n}/${view}.md`;
+  }
+  viewKey(view, n) { return ["plan", "report"].includes(view) ? view : `${n}:${view}`; }
+  async loadView(folder, opts) {
+    const n = this.selected ?? this.rounds[this.rounds.length - 1]?.n ?? 0;
+    let text = null;
+    try { text = await readTextFile(join(folder, this.fileFor(this.view, n)), opts); } catch { text = null; }
+    this.extra[this.viewKey(this.view, n)] = text;
+  }
+  show(view, cx) {
+    this.view = view;
+    const { folder, on } = this.where();
+    if (view !== "summary" && folder) cx.spawn(async (cx) => { await this.loadView(folder, on ? { on } : {}); cx.notify(); });
+    cx.notify();
   }
 
   render(cx) {
@@ -94,7 +125,7 @@ export class Reviews {
         return h_flex().id(`rv-${r.n}`).h(24).px(8).gap(5).flex_none().items_center().rounded(6).text_size(11.8)
           .border_1().border_color(on ? t.accent : t.border).bg(on ? t.selected : t.background)
           .text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover)).cursor_pointer()
-          .on_click((_e, cx) => { this.selected = r.n; this.confirm = null; cx.notify(); })
+          .on_click((_e, cx) => { this.selected = r.n; this.confirm = null; this.show(this.view, cx); })
           .child(div().size(6).rounded(3).bg(color[r.verdict]))
           .child(`Round ${r.n}`)
           .when(Boolean(pair?.audits?.[r.n]), (el) => el.child(svg(I("shield")).size(11).text_color(t.dim)));
@@ -134,8 +165,32 @@ export class Reviews {
     const prev = current ? this.rounds.find((r) => r.n === current.n - 1) : null;
     const repeats = current && prev && current.verdict === "changes" ? P.repeatedFindings(prev.text, current.text) : [];
 
+    // A team: which report of the round to show, and the PM's plan and report.
+    const team = pair?.kind === "team";
+    const stageIds = (pair?.stages ?? []).filter((id) => id !== "tests" || (current && this.names.has(`tests-${current.n}.txt`)));
+    const views = !team ? [] : [
+      ...(current ? [["summary", "Summary"], ["coder", "Coder notes"], ...stageIds.map((id) => [id, P.STAGES[id]?.name ?? id])] : []),
+      ...(this.names.has("plan.md") ? [["plan", "Plan"]] : []), ...(this.names.has("report.md") ? [["report", "Report"]] : []),
+    ];
+    const view = views.some(([v]) => v === this.view) ? this.view : "summary";
+    const viewChips = views.length < (current ? 2 : 1) ? null : h_flex().id("rv-views").flex_none().flex_wrap().gap(4).px(10).py(6).border_b(1).border_color(t.border)
+      .children(views.map(([v, name]) => {
+        const on = v === view;
+        return div().id(`rv-view-${v}`).h(22).px(7).flex().items_center().flex_none().rounded(5).text_size(11.5)
+          .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
+          .when(on, (el) => el.font_medium())
+          .hover((s) => s.bg(t.hover)).cursor_pointer()
+          .on_click((_e, cx) => this.show(v, cx))
+          .child(name);
+      }));
+    const other = view !== "summary" ? this.extra[this.viewKey(view, current?.n ?? 0)] : undefined;
+    const otherText = other === undefined ? "Loading…" : other === null ? `Not written yet (${this.fileFor(view, current?.n ?? 0)}).`
+      : view === "tests" ? "```text\n" + other.trimEnd() + "\n```" : other;
+
     let content;
     if (!folder) content = empty("No folder", "Focus a terminal to see its reviews.");
+    else if (["plan", "report"].includes(view)) content = div().id("rv-body").flex_1().min_h(0).overflow_y_scrollbar()
+      .child(div().px(12).py(10).text_size(12.5).text_color(t.foreground).child(TextView.markdown(`rv-${view}`, otherText).selectable(true)));
     else if (!current) content = empty(this.loading ? "Looking for reviews…" : "No reviews yet",
       pair ? "Press Review in the bar above once the writer is done." : "Start a writer/reviewer pair from the bar above; each review round shows here.");
     else content = v_flex().flex_1().min_h(0)
@@ -152,12 +207,13 @@ export class Reviews {
         .children(repeats.map((f) => div().text_color(t.muted).truncate().child(`• ${f}`)))))
       .child(div().id("rv-body").flex_1().min_h(0).overflow_y_scrollbar()
         .child(div().px(12).pb(12).text_size(12.5).text_color(t.foreground)
-          .child(TextView.markdown(`rv-md-${current.n}`, current.text).selectable(true))));
+          .child(TextView.markdown(`rv-md-${current.n}-${view}`, view === "summary" ? current.text : otherText).selectable(true))));
 
     return v_flex().size_full().min_w(0).bg(t.background).rounded(10).border_1().border_color(t.border).overflow_hidden()
       .child(header)
       .when(Boolean(undoBar), (el) => el.child(undoBar))
       .when(Boolean(chips), (el) => el.child(chips))
+      .when(Boolean(viewChips), (el) => el.child(viewChips))
       .when(Boolean(cps[0]) && !pair?.undo, (el) => el.child(h_flex().flex_none().px(10).pt(7).gap(6).items_center()
         .child(div().flex_1().text_size(11.3).text_color(t.dim).child("Snapshots are kept each round"))
         .child(restoreButton(0, "Restore the start"))))

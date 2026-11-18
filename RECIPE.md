@@ -122,6 +122,16 @@ and dark themes):
   (warning). The limit only stops Auto; Review and Feedback by hand can go past it.
   **Stop** ends the running job and turns Auto off. A Herdr reload pauses running pairs and
   says so.
+- **Team screen**: only the writer is labelled into the new tab; the reviewer, tester and PM
+  start without a pane and are placed with `terminal.keep` (reviewer right of the writer, PM
+  below the writer then `pane.swap` up, tester below the reviewer then swapped up), each
+  waited for in `panes()`; one that can't be placed still gets a pane on the right. Focus ends
+  on the PM. The bar's strip replaces the verdict pill for a team: PM (planning, plan ready
+  "you", approved), Coder, a `Test files` box when the guard failed, then `p.stages` (Tests only
+  with a test command), with the subtask `n/N` once a plan runs. The Reviews panel, for a
+  team, adds view chips per round: Summary (`review-<n>.md`), Coder notes (`round-<n>/coder.md`),
+  each stage's file (`round-<n>/<stage>.md`, Tests as `tests-<n>.txt`), and Plan / Report when
+  they exist; before the first round it opens on the Plan.
 - **PM** (a team's fourth agent, Claude by default, `coderwriter.role=pm`, PM chip, ansi6): at
   start `plan.md` and `report.md` are removed (an old plan must not pass for the new one), and
   the PM gets the task (or is told you'll give it in its pane) and writes `.coderwriter/plan.md`:

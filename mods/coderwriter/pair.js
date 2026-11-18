@@ -3,7 +3,7 @@
 // shared("coderwriter.pairs") keyed by the pair's tab id, so the bar and the pane
 // headers (and a reload) see the same thing.
 import { RELAY_PY } from "./relay.js";
-import { exec, shared, setShared, terminals, spaces, run, notify, readTextFile, home, openOverlay } from "herdr";
+import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTextFile, home, openOverlay } from "herdr";
 
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
@@ -894,6 +894,31 @@ export async function openSpace(folder) {
   throw new Error(`Could not open a space in ${folder}`);
 }
 
+// A team's panes as a 2×2 grid in the order the work flows: PM over Coder on the left,
+// Tester over Reviewer on the right. The writer's pane comes from the tab; each other
+// agent is given a pane right of / below one, then swapped up. Whatever can't be placed
+// still gets a pane, so no agent is left invisible.
+const hasPane = (t) => panes().some((p) => p.terminal === t);
+async function waitPane(t) { for (let i = 0; i < 30 && !hasPane(t); i++) await sleep(150); return hasPane(t); }
+async function placePane(t, beside, place, up) {
+  run("pane.focus", { terminal: beside });
+  run("terminal.keep", { terminal: t, place });
+  if (!(await waitPane(t)) || !up) return;
+  run("pane.focus", { terminal: t });
+  run("pane.swap", { direction: "up" });
+}
+async function arrangeTeam(w, r, tt, pm) {
+  try {
+    if (await waitPane(w)) {
+      await placePane(r, w, "right", false);
+      if (pm) await placePane(pm, w, "down", true);
+      if (tt && hasPane(r)) await placePane(tt, r, "down", true);
+    }
+  } catch { /* placed below */ }
+  for (const t of [r, tt, pm]) if (t && !hasPane(t)) { run("terminal.keep", { terminal: t, place: "right" }); await waitPane(t); }
+  run("pane.focus", { terminal: pm ?? w }); // you talk to the PM first
+}
+
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
 export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, max, auto, lens = false, team = false }) {
   const machine = space.machine ?? null;
@@ -902,19 +927,21 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const tab = machine ? `${machine}/${raw}` : raw;
   folder = folder || space.folder || home();
   await excludeReviews(folder, machine);
-  const launch = async (role, agent) => {
+  // inTab: labelled into the new tab, which the app lays out side by side; a team's other
+  // agents start without a pane and arrangeTeam() places them.
+  const launch = async (role, agent, inTab = true) => {
     const args = ["run", "--bg", "--keep", "--json", "--no-parent", "--cwd", folder];
     if (machine) args.push("--on", machine);
-    args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`,
-      "--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent));
+    if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
+    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
     return r.address;
   };
   const w = await launch("writer", writer);
-  const r = await launch("reviewer", reviewer);
-  const tt = team && tester ? await launch("tester", tester) : null;
-  const pmT = team && pm ? await launch("pm", pm) : null;
+  const r = await launch("reviewer", reviewer, !team);
+  const tt = team && tester ? await launch("tester", tester, false) : null;
+  const pmT = team && pm ? await launch("pm", pm, false) : null;
   const roles = { ...(tt ? { tester: { agent: tester.key, name: tester.name, t: tt } } : {}), ...(pmT ? { pm: { agent: pm.key, name: pm.name, t: pmT } } : {}) };
   update(tab, {
     tab, space: space.id, machine, folder, task,
@@ -933,6 +960,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const title = task ? `cw · ${task.replace(/\s+/g, " ").slice(0, 28)}` : "coderwriter";
   run("tab.rename", { id: tab, name: title });
   run("tab.select", { id: tab });
+  if (team) await arrangeTeam(w, r, tt, pmT);
   await job(tab, async (g) => {
     if (pmT) {
       // A plan from an earlier team in this folder must not pass for the new one.

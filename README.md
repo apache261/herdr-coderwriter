@@ -31,6 +31,11 @@ Changes panels.
   files are the tester's: a coder that changes one gets it back as a finding. Each check
   reports PASS or FAIL in `.coderwriter/round-<n>/`; the coder keeps its own notes in
   `.coderwriter/coder.md`. Nothing is committed: you review and commit.
+  On screen: the team's tab is a 2×2 grid in the order the work flows (PM over Coder, Tester
+  over Reviewer); the bar shows the flow as a strip (`PM › Coder › Tester › Tests › Quality ›
+  Security`, each working, passed, failed or waiting on you, plus the subtask count); and the
+  Reviews panel shows each round's summary, the coder's notes and every check's own report,
+  and the PM's plan and report.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.
