@@ -76,7 +76,7 @@ export class NewPair {
 
   problem() {
     const { w, r, tt, pm } = this.chosen();
-    for (const [role, a] of [["writer", w], ["reviewer", r], ...(tt ? [["tester", tt], ["PM", pm]] : [])]) {
+    for (const [role, a] of [[tt ? "coder" : "writer", w], ["reviewer", r], ...(tt ? [["tester", tt], ["PM", pm]] : [])]) {
       if (a.installed === false) return a.cmd ? `Type the ${role}'s command` : a.custom ? `The ${role} model runs through Codex, which is not installed` : `The ${role} agent (${a.name}) is not installed`;
     }
     return null;
