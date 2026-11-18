@@ -114,6 +114,16 @@ for the quality review and code audit, and Cloudflare's
 [security-audit skill](https://github.com/cloudflare/security-audit-skill) for the security
 audit.
 
+**From Herdr**: ask an agent in Herdr (Claude Code, Codex, …):
+
+```text
+Read ~/.config/herdr-app/AGENTS.md, then add this layout: https://github.com/apache261/herdr-coderwriter/tree/main
+```
+
+or open the gallery at [herdr.dev/gallery](https://herdr.dev/gallery/) and search **apache261**.
+
+**By hand**:
+
 ```sh
 git clone https://github.com/apache261/herdr-coderwriter
 cd herdr-coderwriter
