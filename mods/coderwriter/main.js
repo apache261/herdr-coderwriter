@@ -14,13 +14,19 @@ import { Usage } from "./usage.js";
 import { Models } from "./models.js";
 import { Tests } from "./tests.js";
 import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents } from "./agents.js";
-import { NewMenu, NewPair, NEW_PAIR } from "./newpair.js";
+import { NewMenu, NewPair, NEW_PAIR, openNewPair } from "./newpair.js";
 import { Audit, AUDIT_REQ } from "./audits.js";
 import { Plan, PLAN_REQ } from "./plan.js";
 
 export { ROLE_COLOR };
 
-const pickerHeight = () => 112 + 31 * P.prefs().models.length + 40;
+// A role's choices in the bar's picker: installed agents (Claude and Codex always), custom
+// models, and the role's command when one is set (it is typed in the New pair dialog).
+const pickerRows = (which, machine) => {
+  const chosen = P.prefs()[which];
+  return allAgents(known(machine), which).filter((a) => a.key === chosen || (a.cmd ? a.installed : a.installed !== false || P.AGENTS.includes(a.key) || a.custom));
+};
+const pickerHeight = (which, machine) => 40 + 31 * pickerRows(which, machine).length + 44;
 
 class Picker {
   init(_props, cx) {
@@ -32,8 +38,7 @@ class Picker {
     const t = theme();
     const which = props().which;
     const chosen = P.prefs()[which];
-    const list = known(this.machine);
-    const rows = allAgents(list);
+    const rows = pickerRows(which, this.machine);
     return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
       .child(div().px(9).pt(4).pb(5).text_size(11).text_color(t.dim).child(which === "writer" ? "Writer agent" : "Reviewer agent"))
       .children(rows.map((a) => {
@@ -43,7 +48,7 @@ class Picker {
           .when(ok, (el) => el.hover((s) => s.bg(t.selected)))
           .on_click(() => { if (!ok) return; P.setPrefs({ [which]: a.key }); closeOverlay(props().overlay); })
           .child(agentIcon(a, 14, t.foreground))
-          .child(div().flex_1().child(a.name))
+          .child(div().flex_1().truncate().child(a.cmd ? `Command: ${a.command}` : a.name))
           .child(a.installed === false ? div().text_size(11).text_color(t.dim).child(a.custom ? "needs Codex" : "not installed")
             : chosen === a.key ? svg(I("check")).size(14).text_color(t.accent) : div());
       }))
@@ -85,6 +90,10 @@ class Bar {
         }
         else if (c === "audit") { const req = shared(AUDIT_REQ); setShared(AUDIT_REQ, null); if (req) P.audit(req.tab, req.kinds); }
         else if (c === "task") this.input.focus();
+        else if (c === "new") openNewPair();
+        else if (c === "team") { P.setPrefs({ team: !P.prefs().team }); notify({ title: "coderwriter", body: `Team mode ${P.prefs().team ? "on" : "off"} for the next pair`, level: "info" }); }
+        else if (c === "show-plan" && p) P.askPlan(p.tab);
+        else if (c === "show-audit" && p) P.askAudit(p.tab);
         else if (!p) notify({ title: "coderwriter", body: "This tab is not a writer/reviewer pair", level: "info" });
         else if (c === "review") P.review(p.tab);
         else if (c === "feedback") P.feedback(p.tab);
@@ -119,10 +128,11 @@ class Bar {
         const space = this.space() ?? await P.openSpace(folder);
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
-        const pick = (key) => agentFor(key, list);
-        const w = pick(pr.writer), r = pick(pr.reviewer), tt = pr.team ? pick(pr.tester) : null, pm = pr.team ? pick(pr.pm) : null;
+        const pick = (key, role) => agentFor(key, list, role);
+        const w = pick(pr.writer, "writer"), r = pick(pr.reviewer, "reviewer"), tt = pr.team ? pick(pr.tester, "tester") : null, pm = pr.team ? pick(pr.pm, "pm") : null;
         for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester], ["PM", pm, pr.pm]] : [])]) {
           if (P.isCustom(key) && !a.custom) throw new Error(`The ${role} model was removed: pick another`);
+          if (a?.cmd && !a.command) throw new Error(`The ${role}'s command is empty: type it in New pair…`);
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
@@ -154,16 +164,16 @@ class Bar {
   agentChip(t, which, compact = false) {
     const key = P.prefs()[which];
     const machine = this.space()?.machine ?? null;
-    const a = agentFor(key, known(machine));
+    const a = agentFor(key, known(machine), which);
     const color = t[ROLE_COLOR[which]];
     const role = which === "writer" ? "Writer" : "Reviewer";
     return this.chip(t, `chip-${which}`, [
       svg(I(which === "writer" ? "pen" : "search")).size(13).text_color(color),
       ...(compact ? [] : [div().text_color(t.muted).child(role)]),
       agentIcon(a, 14, t.foreground),
-      ...(compact ? [] : [div().font_medium().child(a.name.replace(" Code", ""))]),
+      ...(compact ? [] : [div().font_medium().max_w(120).truncate().child(a.name.replace(" Code", ""))]),
       svg(I("chevron-down")).size(12).text_color(t.dim),
-    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 250, height: pickerHeight(), props: { role: "pick", which } }),
+    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 270, height: pickerHeight(which, machine), props: { role: "pick", which } }),
     { tip: compact ? `${role} for the next pair: ${a.name}` : undefined });
   }
 

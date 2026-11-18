@@ -7,7 +7,9 @@ import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTex
 
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
-export const AGENTS = ["claude", "codex"];
+export const AGENTS = ["claude", "codex"]; // the agents with launch flags (the Launch popup)
+// A role's own command line (prefs.commands[role]) instead of an agent: agent key "cmd".
+export const CMD = "cmd";
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
@@ -15,6 +17,7 @@ export function prefs() {
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
+  p.commands = { writer: "", reviewer: "", tester: "", pm: "", ...(p.commands ?? {}) };
   p.tests = p.tests && typeof p.tests === "object" ? p.tests : {};
   return p;
 }
@@ -94,6 +97,7 @@ export function joinArgs(args) {
 
 // The argv a pair starts an agent with: its base command plus the person's flags.
 export function launchArgv(agent) {
+  if (agent.key === CMD) return splitArgs(agent.command ?? "");
   const m = customModel(agent.key);
   // Custom models run Codex, so they take Codex's flags.
   if (m) return [...customArgv(m), ...splitArgs(prefs().flags.codex ?? "")];

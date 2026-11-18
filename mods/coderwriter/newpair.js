@@ -8,7 +8,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { theme, spaces, panes, focused, openOverlay, closeOverlay, props, pickFolder, run, home, setShared } from "herdr";
 import * as P from "./pair.js";
 import { isDangerous } from "./launch.js";
-import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents } from "./agents.js";
+import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents, riskyCommand } from "./agents.js";
 
 export const NEW_PAIR = "coderwriter.newPairRequest";
 
@@ -16,7 +16,7 @@ const activeSpace = () => spaces().find((s) => s.active) ?? null;
 const shortName = (a) => a.name.replace(" Code", "");
 
 export function openNewPair() {
-  openOverlay({ mod: "coderwriter", kind: "dialog", width: 540, height: 660, props: { role: "newpair" } });
+  openOverlay({ mod: "coderwriter", kind: "dialog", width: 560, height: 700, props: { role: "newpair" } });
 }
 
 export class NewMenu {
@@ -33,7 +33,7 @@ export class NewMenu {
   render() {
     const t = theme();
     const pr = P.prefs(), list = known(activeSpace()?.machine ?? null);
-    const w = agentFor(pr.writer, list), r = agentFor(pr.reviewer, list);
+    const w = agentFor(pr.writer, list, "writer"), r = agentFor(pr.reviewer, list, "reviewer");
     return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
       .child(div().px(9).pt(4).pb(4).text_size(11).text_color(t.dim).child("Pair coding"))
       .child(this.row(t, "new-pair", svg(I("pen")).size(14).text_color(t[ROLE_COLOR.writer]), "New pair…", `${shortName(w)} → ${shortName(r)}`, openNewPair))
@@ -54,18 +54,27 @@ export class NewPair {
     this.input.on("submit", (_e, cx) => this.start(cx));
     this.input.focus();
     cx.timer.after(50, () => this.input.focus());
+    // Each role's own command line (used when its agent is "Command").
+    this.cmds = {};
+    for (const role of ["writer", "reviewer", "tester", "pm"]) {
+      const input = InputState.new({ placeholder: "Command line, e.g. claude --model sonnet" });
+      input.set_value(P.prefs().commands[role] ?? "");
+      input.on("change", (_e, cx) => { P.setPrefs({ commands: { ...P.prefs().commands, [role]: input.value() } }); cx.notify(); });
+      this.cmds[role] = input;
+    }
     cx.spawn(async (cx) => { try { await refreshKnown(this.machine); } catch { this.failed = true; } cx.notify(); });
   }
 
   chosen() {
     const pr = P.prefs(), list = known(this.machine);
-    return { pr, w: agentFor(pr.writer, list), r: agentFor(pr.reviewer, list), tt: pr.team ? agentFor(pr.tester, list) : null, pm: pr.team ? agentFor(pr.pm, list) : null };
+    return { pr, w: agentFor(pr.writer, list, "writer"), r: agentFor(pr.reviewer, list, "reviewer"),
+      tt: pr.team ? agentFor(pr.tester, list, "tester") : null, pm: pr.team ? agentFor(pr.pm, list, "pm") : null };
   }
 
   problem() {
     const { w, r, tt, pm } = this.chosen();
     for (const [role, a] of [["writer", w], ["reviewer", r], ...(tt ? [["tester", tt], ["PM", pm]] : [])]) {
-      if (a.installed === false) return a.custom ? `The ${role} model runs through Codex, which is not installed` : `The ${role} agent (${a.name}) is not installed`;
+      if (a.installed === false) return a.cmd ? `Type the ${role}'s command` : a.custom ? `The ${role} model runs through Codex, which is not installed` : `The ${role} agent (${a.name}) is not installed`;
     }
     return null;
   }
@@ -80,10 +89,13 @@ export class NewPair {
   label(t, text) { return div().text_size(11.5).font_medium().text_color(t.muted).child(text); }
 
   // One row of agents to choose from for a role.
+  // A role's agents: the installed ones (and the chosen one), then Command, whose text box
+  // shows under the row when it is chosen.
   agents(t, which) {
     const chosen = P.prefs()[which];
-    return h_flex().flex_wrap().gap(6).children(allAgents(known(this.machine)).map((a) => {
-      const on = a.key === chosen, ok = a.installed !== false;
+    const list = allAgents(known(this.machine), which).filter((a) => a.cmd || a.installed !== false || a.key === chosen);
+    const row = h_flex().flex_wrap().gap(6).children(list.map((a) => {
+      const on = a.key === chosen, ok = a.cmd || a.installed !== false;
       return h_flex().id(`${which}-${a.key}`).h(30).px(10).gap(7).items_center().flex_none().rounded(7)
         .border_1().border_color(on ? t[ROLE_COLOR[which]] : t.border).bg(on ? t.selected : t.background)
         .text_size(12.3).text_color(ok ? t.foreground : t.dim)
@@ -91,9 +103,13 @@ export class NewPair {
         .when(!ok, (el) => el.tooltip(a.custom ? "Needs Codex" : "Not installed"))
         .on_click((_e, cx) => { if (ok) { P.setPrefs({ [which]: a.key }); cx.notify(); } })
         .child(agentIcon(a, 14, t.foreground))
-        .child(a.name)
+        .child(a.cmd ? "Command" : a.name)
         .when(on, (el) => el.child(svg(I("check")).size(12).text_color(t[ROLE_COLOR[which]])));
     }));
+    if (chosen !== P.CMD) return row;
+    return v_flex().gap(6).child(row)
+      .child(Input.new(this.cmds[which]).h(30).px(9).rounded(7).border_1().border_color(t.border).bg(t.background).text_size(12.3).text_color(t.foreground))
+      .child(div().text_size(11).text_color(t.dim).child("Runs in the folder in place of an agent. Use an agent Herdr shows a status for (its badge goes working → idle), or the team waits for ever."));
   }
 
   iconButton(t, id, icon, onClick, enabled) {
@@ -120,18 +136,20 @@ export class NewPair {
     const { pr } = this.chosen();
     const problem = this.problem();
     const keys = [...new Set([pr.writer, pr.reviewer, ...(pr.team ? [pr.tester, pr.pm] : [])].map((k) => (P.isCustom(k) ? "codex" : k)))];
-    const danger = keys.some(isDangerous);
+    const danger = keys.some(isDangerous) || [["writer", pr.writer], ["reviewer", pr.reviewer], ...(pr.team ? [["tester", pr.tester], ["pm", pr.pm]] : [])]
+      .some(([role, k]) => k === P.CMD && riskyCommand(pr.commands[role]));
     const setMax = (n) => P.setPrefs({ max: Math.max(1, Math.min(10, n)) });
     const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team);
 
     return v_flex().size_full().bg(t.popover).text_size(12.5).text_color(t.foreground)
-      .child(v_flex().flex_1().min_h(0).gap(14).px(18).pt(16).pb(14)
+      .child(div().id("np-body").flex_1().min_h(0).overflow_y_scrollbar().child(v_flex().gap(14).px(18).pt(16).pb(14)
         .child(v_flex().gap(4)
           .child(h_flex().gap(8).items_center()
             .child(svg(I("pen")).size(15).text_color(t[ROLE_COLOR.writer]))
-            .child(div().text_size(14).font_semibold().child("New pair")))
+            .child(div().text_size(14).font_semibold().child(team ? "New team" : "New pair")))
           .child(div().text_size(11.8).text_color(t.dim)
-            .child("A writer makes the change and leaves it uncommitted; a reviewer reviews the uncommitted diff, round after round.")))
+            .child(team ? "A team: the PM plans the task with you; then for each subtask the coder writes, the tester tests, the reviewer checks quality and security, round after round. Nothing is committed."
+              : "A writer makes the change and leaves it uncommitted; a reviewer reviews the uncommitted diff, round after round.")))
         .child(v_flex().gap(6)
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
@@ -193,7 +211,7 @@ export class NewPair {
               .child(div().size(11).rounded(6).bg(auto ? t.accent_foreground : t.background)))))
         .when(danger, (el) => el.child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.blocked)
           .child(svg(I("alert")).size(13))
-          .child("Launch flags skip permission prompts for these agents (change them in the bar's Launch chip)."))))
+          .child("Launch flags or a command skip permission prompts (Launch chip in the bar, or the command above).")))))
       .child(h_flex().flex_none().gap(8).px(18).py(12).items_center().border_t(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(problem ? t.blocked : t.dim)
           .child(problem ?? (this.failed ? "Could not check installed agents" : "Esc closes")))

@@ -219,7 +219,16 @@ and dark themes):
   choice is remembered per space.
 - Keys (optional, add to `keys.json`): `coderwriter.start`, `coderwriter.task` (focus the
   task input), `coderwriter.review`, `coderwriter.feedback`, `coderwriter.auto`,
-  `coderwriter.stop`.
+  `coderwriter.stop`, `coderwriter.new` (the New pair dialog), `coderwriter.team` (Team mode on
+  or off for the next pair), `coderwriter.show-plan` and `coderwriter.show-audit` (a team's
+  Plan and Audit dialogs).
+- **Agents per role**: `knownAgents()` (Herdr's programs with a `run`, Claude and Codex first)
+  plus custom models (`m:<id>`) plus `cmd`: the role's own command line in
+  `prefs.commands[role]`, split shell-style and run as the argv (no launch flags added). The
+  New pair dialog lists the installed ones per role (and the chosen one), with Command's text
+  box under the row when chosen; the bar's pickers list installed agents, Claude and Codex,
+  custom models, and Command when that role has one. A command with
+  `--dangerously…`/`--yolo`/`bypass`/`skip-permissions`/`--approve-for-me` shows the red warning.
 
 ## Built from
 

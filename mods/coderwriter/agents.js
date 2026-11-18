@@ -20,17 +20,24 @@ export function agentIcon(a, size, color) {
   return a.tint ? svg(a.icon).size(size).flex_none().text_color(color) : image(a.icon).size(size).flex_none();
 }
 
-// Claude and Codex as knownAgents() reports them, cached per machine.
+// The agents Herdr can start (knownAgents(): its program table's entries with a `run`),
+// Claude and Codex first, cached per machine.
 export function known(machine) { return shared(KNOWN)?.[machine ?? ""] ?? []; }
 export async function refreshKnown(machine) {
   const list = await knownAgents({ on: machine });
-  const ours = list.filter((a) => P.AGENTS.includes(a.key));
+  const rank = (a) => { const i = P.AGENTS.indexOf(a.key); return i < 0 ? P.AGENTS.length : i; };
+  const ours = [...list].sort((a, b) => rank(a) - rank(b));
   setShared(KNOWN, { ...(shared(KNOWN) ?? {}), [machine ?? ""]: ours });
   return ours;
 }
 
-// Claude, Codex, or a custom model (which runs Codex, so it's installed when Codex is).
-export function agentFor(key, list) {
+// An agent Herdr knows, a custom model (which runs Codex, so it's installed when Codex is),
+// or (key "cmd") the role's own command line.
+export function agentFor(key, list, role = null) {
+  if (key === P.CMD) {
+    const command = (P.prefs().commands[role] ?? "").trim();
+    return { key, name: command ? command.split(/\s+/)[0] : "Command", command, icon: I("terminal"), tint: true, installed: Boolean(command), cmd: true };
+  }
   const m = P.customModel(key);
   if (m) {
     const codex = list.find((a) => a.key === "codex");
@@ -40,7 +47,11 @@ export function agentFor(key, list) {
   return list.find((a) => a.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false, installed: null };
 }
 
-// Every agent a pair can use: Claude Code, Codex, then the custom models.
-export function allAgents(list) {
-  return [...P.AGENTS, ...P.prefs().models.map((m) => `m:${m.id}`)].map((key) => agentFor(key, list));
+// Every agent a role can use: the known agents (Claude Code and Codex even when not
+// reported), the custom models, then, with a role, its own command line.
+export function allAgents(list, role = null) {
+  const keys = [...new Set([...P.AGENTS, ...list.map((a) => a.key)])];
+  return [...keys, ...P.prefs().models.map((m) => `m:${m.id}`), ...(role ? [P.CMD] : [])].map((key) => agentFor(key, list, role));
 }
+// A command line that skips the agent's permission prompts.
+export const riskyCommand = (cmd) => /--dangerously|--yolo|bypass|skip-permissions|--approve-for-me/i.test(cmd ?? "");

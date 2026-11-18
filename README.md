@@ -36,6 +36,12 @@ Changes panels.
   Security`, each working, passed, failed or waiting on you, plus the subtask count); and the
   Reviews panel shows each round's summary, the coder's notes and every check's own report,
   and the PM's plan and report.
+- **Any agent per role**: each role (writer, reviewer, and a team's tester and PM) can be any
+  agent Herdr knows and finds installed (Claude Code, Codex, Copilot, …), a custom model, or
+  **Command**: a command line of your own for that role (`claude --model sonnet`,
+  `codex -m gpt-5 -c model_reasoning_effort=high`, …). Pick them in New pair… (the bar's
+  pickers list them too). Use agents Herdr shows a status for: coderwriter waits for each turn
+  to end by it.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.
