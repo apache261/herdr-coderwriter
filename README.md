@@ -18,15 +18,19 @@ Changes panels.
   back to any round (undoable).
 - **Stuck-loop detection**: a finding that comes back unchanged from the round before pauses
   Auto, and Feedback sends it back to the writer with a nudge.
-- **Team** (preview, toggle in New pair): a third agent, the **Tester**, joins the coder
-  (the writer) and the reviewer. Every round runs all the checks one after another, even when
+- **Team** (preview, toggle in New pair): four agents, like working with a team. You give
+  the task to the **PM**, which asks you what's unclear and writes a plan of subtasks
+  (`.coderwriter/plan.md`); you approve it in the Plan dialog or ask for changes. Then each
+  subtask goes to the **Coder** (the writer), and the **Tester** and the reviewer check it
+  round after round until it passes; then the next subtask, and at the end the PM's report
+  (`.coderwriter/report.md`) and the offer of a full audit. Every round runs all the checks one after another, even when
   one fails: the tester writes and runs unit and functional tests, then the test command, then
   the reviewer's **Quality** check (with Ponytail's `ponytail-review` when installed) and its
   **Security** check of the change (with the principles of Cloudflare's skill when installed;
   the full audit is offered once approved); every failure goes to the coder in one note. Test
   files are the tester's: a coder that changes one gets it back as a finding. Each check
   reports PASS or FAIL in `.coderwriter/round-<n>/`; the coder keeps its own notes in
-  `.coderwriter/coder.md`. A project manager comes next.
+  `.coderwriter/coder.md`. Nothing is committed: you review and commit.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.

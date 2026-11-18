@@ -11,7 +11,7 @@ export const AGENTS = ["claude", "codex"];
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", pm: "claude", ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -243,7 +243,7 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
   const notes = p.kind === "team" ? ` The writer's own notes on the change: ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` : "";
   const who = p.kind === "team" ? `You are the REVIEWER in a team (round ${round}).` : `You are the REVIEWER in a writer/reviewer pair (round ${round}).`;
   return who + (out.focus ?? "") +
-    (p.task ? ` The writer's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
+    (taskText(p) ? ` The writer's task: ${taskText(p)}.` : "") +
     ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: ${out.ok}" or "VERDICT: ${out.no}",` +
@@ -379,7 +379,7 @@ export function testerBrief(p, round, file) {
   const whole = base && now ? ` The whole change is \`git diff ${base} ${now}\`.` : "";
   const cmd = testCommand(p.folder);
   return `You are the TESTER in a team (round ${round}).` +
-    (p.task ? ` The coder's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
+    (taskText(p) ? ` The coder's task: ${taskText(p)}.` : "") +
     ` The coder's uncommitted changes are in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/);` +
     ` its notes are in ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` + since + whole + touched +
     ` 1) Write or update unit tests and functional tests for what the change should do, in the project's own test framework and folders` +
@@ -463,8 +463,136 @@ async function teamRound(tab, g) {
   const again = repeats.length ? ` · ${repeats.length} repeated from round ${round - 1}` : "";
   const unsure = v.verdict === "unknown" ? " · a check gave no result" : "";
   update(tab, { phase: "reviewed", stage: null, verdict: v.verdict, repeats, note: `Round ${round}: ${summary}${again}${unsure}` });
-  if (v.verdict === "approved") askAudit(tab);
+  if (v.verdict === "approved" && !planRunning(pair(tab))) askAudit(tab);
   return v.verdict;
+}
+
+// ---- the PM -----------------------------------------------------------------------
+// A team with a PM: you give the PM the task, it writes .coderwriter/plan.md (subtasks as
+// "## <n>. <title>"), you approve it in the Plan dialog, then coderwriter itself hands the
+// subtasks to the coder one by one, each through the team's rounds until approved, and the
+// PM writes .coderwriter/report.md at the end. The PM only plans and reports: the hand-offs
+// are this code, so a confused agent can't derail them.
+export const PLAN = `${REVIEW_DIR}/plan.md`, REPORT = `${REVIEW_DIR}/report.md`;
+export function pmBrief(task) {
+  return `You are the PM (project manager) of a small team in this folder: a CODER writes the code, a TESTER writes and runs the tests, ` +
+    `and a REVIEWER checks quality and security. You plan and report; you don't write code or tests. ` +
+    (task ? `The user's task: ${task}\n\n` : `The user will give you the task here. `) +
+    `Read enough of the repository to plan it (README, layout, the code the task touches). If something important is unclear, ` +
+    `ask the user here and wait for the answer. Then write the plan to ${PLAN}: a one-line goal, then the subtasks in the order ` +
+    `to do them, each as a heading "## <n>. <title>" followed by "Do:" (what to change, where), "Done when:" (what must be true) ` +
+    `and "Tests:" (what the tester should check). Use as few subtasks as the task needs (one is fine for a small task), each small ` +
+    `enough for one coder to finish and get reviewed. The user approves the plan before anyone starts. Then stop.`;
+}
+const reviseBrief = (text) => `The user wants changes to the plan: ${text}\n\nRewrite ${PLAN} in the same format ` +
+  `(ask here first if something is unclear). Then stop.`;
+function reportBrief(p) {
+  const n = p.plan.tasks.length;
+  return `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security). ` +
+    `Write a short report for the user to ${REPORT}: for each subtask what was done (see ${CODER_NOTES}, the reports in ` +
+    `${REVIEW_DIR}/round-*/ and git diff), the tests added, anything still open or worth a second look, and what to check before ` +
+    `committing. Change no file except ${REPORT}. Then stop.`;
+}
+// The plan's subtasks: [{ title, body }] from its "## <n>. <title>" headings.
+export function planTasks(text) {
+  return (text ?? "").split(/^##[ \t]+(?=\d+[.)])/m).slice(1).map((part) => {
+    const [head, ...rest] = part.split("\n");
+    return { title: head.replace(/^\d+[.)]\s*/, "").trim(), body: rest.join("\n").trim() };
+  });
+}
+// The task a brief names: the current subtask once a plan runs, else the pair's task.
+export function taskText(p) {
+  const s = p.plan?.approved && !p.plan.done ? p.plan.tasks[p.plan.at] : null;
+  const task = (p.task ?? "").replace(/\s+/g, " ").trim();
+  return s ? `${s.title} (subtask ${p.plan.at + 1} of ${p.plan.tasks.length} in ${PLAN}${task ? `; the whole task: ${task}` : ""})` : task;
+}
+export function askPlan(tab) {
+  openOverlay({ mod: "coderwriter", kind: "dialog", width: 660, height: 640, props: { role: "plan", tab } });
+}
+async function readPlan(p) {
+  try { return await readTextFile(join(p.folder, PLAN), where(p)); } catch { return null; }
+}
+
+// Wait until the PM has written (or rewritten) the plan and finished its turn. A turn that
+// ends without one means it asked you something: say so, and keep waiting for your answer.
+async function waitPlan(tab, g, before) {
+  let told = false;
+  for (;;) {
+    if (gen[tab] !== g) throw new Cancelled();
+    const p = pair(tab), pm = roleOf(p, "pm");
+    const s = status(pm.t);
+    if (s.state === "gone" || s.state === "finished") throw new Error("The PM exited");
+    const text = s.status === "working" ? null : await readPlan(p);
+    if (text != null && text !== before) {
+      const tasks = planTasks(text);
+      update(tab, { phase: "plan_ready", plan: { tasks, at: 0, approved: false, done: false },
+        note: tasks.length ? `Plan ready: ${tasks.length} subtask${tasks.length === 1 ? "" : "s"}, approve it to start` : "The plan has no \"## 1. Title\" subtasks: ask the PM to fix it" });
+      notify({ title: "coderwriter: plan ready", body: "The PM's plan is ready for you to approve", level: "info", action: { name: "tab.select", args: { id: tab } } });
+      askPlan(tab);
+      return;
+    }
+    if (!told && (s.status === "idle" || s.status === "done" || s.status === "blocked")) {
+      told = true;
+      update(tab, { note: "The PM has a question: answer it in the PM pane" });
+      notify({ title: "coderwriter: the PM asks", body: "Answer the PM in its pane; the plan follows", level: "info", action: { name: "tab.select", args: { id: tab } } });
+    }
+    await sleep(2000);
+  }
+}
+
+async function startSubtask(tab, g, at) {
+  const p = pair(tab);
+  update(tab, { plan: { ...p.plan, at }, taskStart: p.round ?? 0, phase: "writing", note: `Subtask ${at + 1}/${p.plan.tasks.length}: coder is working` });
+  const q = pair(tab), s = q.plan.tasks[at];
+  const text = `Subtask ${at + 1} of ${q.plan.tasks.length} from the PM's plan (${PLAN})${q.task ? `; the whole task: ${q.task.replace(/\s+/g, " ")}` : ""}.\n\n## ${s.title}\n${s.body}`;
+  await say(tab, g, q.writer.t, "writer", writerBrief(text, true));
+  update(tab, { phase: "written", note: `Subtask ${at + 1}/${q.plan.tasks.length}: written, ready for review` });
+}
+
+// A subtask was approved: hand out the next one, or have the PM report. "next" or "done".
+async function afterApproval(tab, g) {
+  const p = pair(tab), n = p.plan.tasks.length;
+  if (p.plan.at < n - 1) {
+    notify({ title: "coderwriter", body: `Subtask ${p.plan.at + 1}/${n} approved: on to ${p.plan.at + 2}`, level: "info" });
+    await startSubtask(tab, g, p.plan.at + 1);
+    return "next";
+  }
+  update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
+  await say(tab, g, roleOf(p, "pm").t, "pm", reportBrief(p));
+  update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
+  notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.`,
+    level: "success", action: { name: "tab.select", args: { id: tab } } });
+  askAudit(tab);
+  return "done";
+}
+const planRunning = (p) => Boolean(p?.plan?.approved && !p.plan.done);
+
+// The Plan dialog's answers (through the bar). A job still waiting for the plan gives way.
+function interruptWait(tab) {
+  if (busy[tab] && ["planning", "plan_ready"].includes(pair(tab)?.phase)) { gen[tab] = (gen[tab] ?? 0) + 1; busy[tab] = false; }
+}
+export function approvePlan(tab) {
+  interruptWait(tab);
+  return job(tab, async (g) => {
+    const p = pair(tab);
+    if (planRunning(p)) throw new Error("The plan is already running");
+    const tasks = planTasks(await readPlan(p));
+    if (!tasks.length) throw new Error(`No subtasks in ${PLAN} (they are "## 1. Title" headings)`);
+    update(tab, { plan: { tasks, at: 0, approved: true, done: false }, auto: true });
+    await startSubtask(tab, g, 0);
+    await loop(tab, g);
+  });
+}
+export function revisePlan(tab, text) {
+  interruptWait(tab);
+  return job(tab, async (g) => {
+    const p = pair(tab);
+    if (planRunning(p)) throw new Error("The plan is already running");
+    const before = await readPlan(p);
+    update(tab, { phase: "planning", note: "The PM is changing the plan" });
+    await say(tab, g, roleOf(p, "pm").t, "pm", reviseBrief(text));
+    await waitPlan(tab, g, before);
+  });
 }
 
 // ---- repeated findings ----------------------------------------------------------
@@ -677,6 +805,10 @@ async function loop(tab, g) {
       await fixTests(tab, g);
       continue;
     }
+    if (verdict === "approved" && planRunning(p)) {
+      if ((await afterApproval(tab, g)) === "next") continue;
+      return;
+    }
     if (verdict === "approved") {
       update(tab, { auto: false, phase: "approved", note: `Approved in round ${p.round}` });
       notify({ title: "coderwriter: approved", body: `${p.task || "The change"} — approved in round ${p.round}`, level: "success", action: { name: "tab.select", args: { id: tab } } });
@@ -694,7 +826,7 @@ async function loop(tab, g) {
         level: "warning", action: { name: "tab.select", args: { id: tab } } });
       return;
     }
-    if (p.round >= p.max) {
+    if (p.round - (p.taskStart ?? 0) >= p.max) {
       update(tab, { auto: false, phase: "limit", note: `Stopped after ${p.round} rounds without approval` });
       notify({ title: "coderwriter: round limit", body: `${p.round} rounds without approval`, level: "warning", action: { name: "tab.select", args: { id: tab } } });
       return;
@@ -703,7 +835,13 @@ async function loop(tab, g) {
   }
 }
 
-export function review(tab) { return job(tab, (g) => (pair(tab)?.kind === "team" ? teamRound(tab, g) : reviewRound(tab, g))); }
+export function review(tab) {
+  return job(tab, async (g) => {
+    if (pair(tab)?.kind !== "team") return reviewRound(tab, g);
+    const v = await teamRound(tab, g);
+    if (v === "approved" && planRunning(pair(tab))) await afterApproval(tab, g);
+  });
+}
 export function audit(tab, kinds) {
   const ok = (kinds ?? []).filter((k) => AUDITS.includes(k));
   if (!ok.length) return;
@@ -757,7 +895,7 @@ export async function openSpace(folder) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, tester = null, max, auto, lens = false, team = false }) {
+export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, max, auto, lens = false, team = false }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -776,11 +914,13 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const w = await launch("writer", writer);
   const r = await launch("reviewer", reviewer);
   const tt = team && tester ? await launch("tester", tester) : null;
+  const pmT = team && pm ? await launch("pm", pm) : null;
+  const roles = { ...(tt ? { tester: { agent: tester.key, name: tester.name, t: tt } } : {}), ...(pmT ? { pm: { agent: pm.key, name: pm.name, t: pmT } } : {}) };
   update(tab, {
     tab, space: space.id, machine, folder, task,
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
-    ...(team ? { stages: teamStageIds(tt), roles: tt ? { tester: { agent: tester.key, name: tester.name, t: tt } } : {} } : {}),
+    ...(team ? { stages: teamStageIds(tt), roles } : {}),
     round: 0, max, auto, lens, kind: team ? "team" : "pair", verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
   // Round 0: the files before the writer touches them (no-op outside a git repo).
@@ -794,7 +934,13 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   run("tab.rename", { id: tab, name: title });
   run("tab.select", { id: tab });
   await job(tab, async (g) => {
-    if (task) {
+    if (pmT) {
+      // A plan from an earlier team in this folder must not pass for the new one.
+      await sh(pair(tab), 'rm -f "$1" "$2"', [PLAN, REPORT]).catch(() => null);
+      update(tab, { phase: "planning", note: task ? "The PM is planning" : "Give the PM your task in its pane" });
+      await say(tab, g, pmT, "pm", pmBrief(task));
+      await waitPlan(tab, g, null);
+    } else if (task) {
       update(tab, { phase: "writing", note: "Writer is working" });
       await say(tab, g, w, "writer", writerBrief(task, team));
       update(tab, { phase: "written", note: "Writer finished: send to review" });
@@ -802,7 +948,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
       update(tab, { phase: "idle", note: "Type the task into the writer" });
     }
   });
-  if (pair(tab)?.auto) setAuto(tab, true);
+  if (pair(tab)?.auto && !pmT) setAuto(tab, true); // with a PM, approving the plan starts the loop
   return tab;
 }
 
@@ -811,7 +957,7 @@ export function resumeNote() {
   const all = pairs();
   let changed = false;
   for (const [tab, p] of Object.entries(all)) {
-    if (["starting", "writing", "reviewing", "auditing", "fixing"].includes(p.phase) || p.auto) {
+    if (["starting", "writing", "reviewing", "auditing", "fixing", "planning", "reporting"].includes(p.phase) || p.auto) {
       all[tab] = { ...p, auto: false, phase: "paused", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
       changed = true;
     }

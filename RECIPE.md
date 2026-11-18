@@ -122,8 +122,19 @@ and dark themes):
   (warning). The limit only stops Auto; Review and Feedback by hand can go past it.
   **Stop** ends the running job and turns Auto off. A Herdr reload pauses running pairs and
   says so.
-- **Team** (`kind: "team"`, the New pair dialog's Team toggle, which adds a Tester agent row,
-  Codex by default): three agents, the tester's pane labelled `coderwriter.role=tester`
+- **PM** (a team's fourth agent, Claude by default, `coderwriter.role=pm`, PM chip, ansi6): at
+  start `plan.md` and `report.md` are removed (an old plan must not pass for the new one), and
+  the PM gets the task (or is told you'll give it in its pane) and writes `.coderwriter/plan.md`:
+  a goal, then subtasks as `## <n>. <title>` with Do / Done when / Tests. coderwriter waits
+  for the PM's turn to end with a new plan; a turn that ends without one is a question
+  (note + toast "Answer the PM in its pane"). Then the Plan dialog (660×640; also the bar's
+  **Plan** button) shows it: **Ask PM to change** sends your text and waits for a rewritten
+  plan; **Approve & start** turns Auto on and hands subtask 1 to the coder. Each subtask runs
+  the team's rounds (the round limit counts per subtask); when one is approved, the next is
+  handed out; after the last, the PM writes `.coderwriter/report.md`, then the done toast and
+  the Audit dialog. Briefs name the current subtask. The PM never drives the hand-offs.
+- **Team** (`kind: "team"`, the New pair dialog's Team toggle, which adds Tester and PM agent
+  rows, Codex and Claude by default): four agents, the tester's pane labelled `coderwriter.role=tester`
   (TESTER chip, ansi3; the writer's chip reads CODER). A round snapshots the files, copies the
   writer's `.coderwriter/coder.md` to `round-<n>/coder.md`, then runs each stage of `p.stages`
   (`tester`, `tests`, `quality`, `security`; `tests` only when the folder has a test command) in

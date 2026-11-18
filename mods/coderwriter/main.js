@@ -3,7 +3,7 @@
 // panel of review rounds), "usage" (the token usage panel), "launch" (the
 // launch-flags popup), "pick" (the agent dropdown popup, props.which = "writer" |
 // "reviewer"), "new" (the tab bar's + menu), "newpair" (the New pair dialog) or
-// "audit" (the Audit dialog, props.tab).
+// "audit" (the Audit dialog, props.tab) or "plan" (the PM's Plan dialog, props.tab).
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { theme, spaces, panes, focused, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
@@ -16,6 +16,7 @@ import { Tests } from "./tests.js";
 import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents } from "./agents.js";
 import { NewMenu, NewPair, NEW_PAIR } from "./newpair.js";
 import { Audit, AUDIT_REQ } from "./audits.js";
+import { Plan, PLAN_REQ } from "./plan.js";
 
 export { ROLE_COLOR };
 
@@ -78,6 +79,10 @@ class Bar {
         const p = this.current();
         if (c === "start") this.start(cx);
         else if (c === "newpair") { const req = shared(NEW_PAIR); setShared(NEW_PAIR, null); if (req) this.start(cx, req); }
+        else if (c === "plan") {
+          const req = shared(PLAN_REQ); setShared(PLAN_REQ, null);
+          if (req?.action === "approve") P.approvePlan(req.tab); else if (req?.action === "revise") P.revisePlan(req.tab, req.text);
+        }
         else if (c === "audit") { const req = shared(AUDIT_REQ); setShared(AUDIT_REQ, null); if (req) P.audit(req.tab, req.kinds); }
         else if (c === "task") this.input.focus();
         else if (!p) notify({ title: "coderwriter", body: "This tab is not a writer/reviewer pair", level: "info" });
@@ -115,8 +120,8 @@ class Bar {
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key) => agentFor(key, list);
-        const w = pick(pr.writer), r = pick(pr.reviewer), tt = pr.team ? pick(pr.tester) : null;
-        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester]] : [])]) {
+        const w = pick(pr.writer), r = pick(pr.reviewer), tt = pr.team ? pick(pr.tester) : null, pm = pr.team ? pick(pr.pm) : null;
+        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester], ["PM", pm, pr.pm]] : [])]) {
           if (P.isCustom(key) && !a.custom) throw new Error(`The ${role} model was removed: pick another`);
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
@@ -125,7 +130,7 @@ class Bar {
         if (!req) { this.input.set_value(""); this.task = ""; }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }
@@ -299,6 +304,7 @@ class Bar {
       .child(this.rounds(t, p))
       .child(this.button(t, "to-review", "arrow-right", "Review", () => P.review(p.tab), { enabled: !busy }))
       .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && ((p.round ?? 0) > 0 || p.phase === "tests_failed") }))
+      .when(Boolean(p.roles?.pm), (el) => el.child(this.button(t, "plan", "list", "Plan", () => P.askPlan(p.tab))))
       .child(this.button(t, "audit", "shield", "Audit", () => P.askAudit(p.tab), { enabled: !busy }))
       .child(this.autoToggle(t, p))
       .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }));
@@ -335,7 +341,7 @@ export default class CoderWriter extends View {
     const role = props()?.role;
     this.inner = role === "pick" ? new Picker() : role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
       : role === "launch" ? new Launch() : role === "models" ? new Models() : role === "tests" ? new Tests()
-      : role === "new" ? new NewMenu() : role === "newpair" ? new NewPair() : role === "audit" ? new Audit() : new Bar();
+      : role === "new" ? new NewMenu() : role === "newpair" ? new NewPair() : role === "audit" ? new Audit() : role === "plan" ? new Plan() : new Bar();
     this.inner.init(initProps, cx);
   }
   render(cx) { return this.inner.render(cx); }
