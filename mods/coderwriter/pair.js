@@ -11,7 +11,7 @@ export const AGENTS = ["claude", "codex"];
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -224,6 +224,7 @@ export function askAudit(tab) {
 export function writerBrief(task, team = false) {
   if (team) return `${task}\n\n(You are the CODER in a team. Make the change in this folder and leave it uncommitted. ` +
     `When you finish, and after every fix, write what you changed and why, and how you checked it, to ${CODER_NOTES}. ` +
+    `A tester writes and runs the tests: don't edit test files; if you think a test is wrong, say why in ${CODER_NOTES}. ` +
     `Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.)`;
   return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted. ` +
     `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.)`;
@@ -274,6 +275,7 @@ export function feedbackBrief(p) {
     return restoredNote(p) + `Round ${round}: ${failed.length ? failed.join(", ") + " failed" : "changes requested"}. ` +
       `Everything to fix is in ${REVIEW_DIR}/review-${round}.md (each check's full report is in ${REVIEW_DIR}/round-${round}/). ` +
       `Address every finding (push back in your reply if you disagree with one).${again} ` +
+      `Fix the code, not the tests: test files are the tester's; if a test is wrong, say why in ${CODER_NOTES}. ` +
       `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.`;
   }
   return restoredNote(p) + `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
@@ -302,9 +304,23 @@ async function verdictOf(p, round) {
 // panel, Feedback, repeat detection and snapshots work exactly as for a pair.
 export const CODER_NOTES = `${REVIEW_DIR}/coder.md`;
 export const STAGES = {
+  tester: { name: "Tester", role: "tester", brief: testerBrief }, // writes and runs the tests
   tests: { name: "Tests", run: testsStage },          // the folder's test command (no agent)
   review: { name: "Review", role: "reviewer" },       // the reviewer agent, PASS / FAIL
+  guard: { name: "Test files" },                      // the coder edited tests (computed, not run)
 };
+// Test files by their usual names: tests/, test/, __tests__/, spec/ folders, *.test.* / *.spec.*,
+// *_test.go, test_*.py, *_test.py. shortcut: by name only; a project with other names isn't guarded.
+const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|[._-](test|spec)\.[^/]+$|(^|\/)test_[^/]*\.py$|_test\.(go|py)$/;
+// Test files the coder changed since the tester's last run (its files were snapshotted then).
+async function coderTouchedTests(p, round) {
+  const from = p.tested?.[round - 1], to = p.checkpoints?.[round];
+  if (!from || !to) return [];
+  const r = await sh(p, 'git diff --name-only "$1" "$2"', [from, to]).catch(() => null);
+  return (r?.stdout ?? "").split("\n").filter((f) => f && TEST_PATH.test(f));
+}
+// The tester goes first so the test command, run next, includes the tests it wrote.
+export const teamStageIds = (tester) => (tester ? ["tester", "tests", "review"] : ["tests", "review"]);
 const MAX_SECTION = 20000; // characters of a failed stage's report copied into review-<n>.md
 export function teamStages(p) {
   return (p.stages ?? ["tests", "review"]).filter((id) => STAGES[id] && (id !== "tests" || testCommand(p.folder)));
@@ -333,6 +349,27 @@ async function testsStage(tab, g, round) {
   return { state: "fail", file: t.file,
     text: `1. The test command \`${t.cmd}\` fails (${why}); full output in ${t.file}. Fix the code, not the tests.\n\n` +
       ((tail?.stdout ?? "").trim() ? "Last lines of the output:\n\n```\n" + tail.stdout.trimEnd() + "\n```" : "It printed nothing.") };
+}
+
+export function testerBrief(p, round, file) {
+  const touched = (p.touchedTests ?? []).length
+    ? ` The coder changed test files since your last run (not allowed): ${p.touchedTests.join(", ")}. Check them: keep what is right, put back what isn't.` : "";
+  const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], prev = cp[round - 1];
+  const since = round > 1 && prev && now ? ` Since round ${round - 1} the coder changed \`git diff ${prev} ${now}\`.` : "";
+  const whole = base && now ? ` The whole change is \`git diff ${base} ${now}\`.` : "";
+  const cmd = testCommand(p.folder);
+  return `You are the TESTER in a team (round ${round}).` +
+    (p.task ? ` The coder's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
+    ` The coder's uncommitted changes are in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/);` +
+    ` its notes are in ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` + since + whole + touched +
+    ` 1) Write or update unit tests and functional tests for what the change should do, in the project's own test framework and folders` +
+    ` (none yet: use the usual one for the language and say so): the normal case, edge cases and the errors the task implies.` +
+    (round > 1 ? ` Keep your earlier tests; if the coder argues in its notes that one is wrong, check, and fix the test only if it is.` : "") +
+    ` 2) Run your tests and the existing suite${cmd ? ` (the project's test command is \`${cmd}\`)` : ""}.` +
+    ` Edit only test files, fixtures and test config; never change the code under test: when the code is wrong, that is a finding.` +
+    ` Write your report to ${file}: the first line exactly "VERDICT: PASS" (every test passes and the change is covered) or "VERDICT: FAIL",` +
+    ` then "Tests written:" and "Ran:" as bullet lists (commands and results), then numbered findings, most important first:` +
+    ` for each failing test what it expects, what happens, and the file and line of the code at fault. Then stop.`;
 }
 
 async function agentStage(tab, g, round, id, found) {
@@ -372,17 +409,25 @@ async function teamRound(tab, g) {
   p = pair(tab);
   const ids = teamStages(p);
   await sh(p, 'mkdir -p "$1" && if [ -f "$2" ]; then cp "$2" "$1/coder.md"; fi', [`${REVIEW_DIR}/round-${round}`, CODER_NOTES]).catch(() => null);
+  const touched = ids.includes("tester") ? await coderTouchedTests(p, round) : [];
+  update(tab, { touchedTests: touched });
   const found = p.lens ? await findSkills(p.folder, p.machine) : {};
   if (p.lens && !found.lens) notify({ title: "coderwriter: Ponytail review not installed", body: `Reviewing without it. ${SKILLS.lens.install}`, level: "warning" });
-  update(tab, { round, phase: "reviewing", verdict: null, repeats: [], stage: null, stageResults: {}, testFixes: 0,
+  update(tab, { round, phase: "reviewing", verdict: null, repeats: [], stage: null, stageResults: touched.length ? { guard: "fail" } : {}, testFixes: 0,
     note: `Round ${round}: ${ids.map((id) => STAGES[id].name).join(" → ")}` });
-  const results = [];
+  const results = touched.length ? [{ id: "guard", state: "fail", file: null,
+    text: `1. You changed test files, which are the tester's: ${touched.join(", ")}. Put them back and fix the code instead; ` +
+      `if a test is wrong, say why in ${CODER_NOTES} and the tester will look at it.` }] : [];
   for (const id of ids) {
     update(tab, { stage: id, note: `Round ${round}: ${STAGES[id].name}` });
     const r = STAGES[id].run ? await STAGES[id].run(tab, g, round) : await agentStage(tab, g, round, id, found);
     if (gen[tab] !== g) throw new Cancelled();
     results.push({ id, ...r });
     update(tab, { stageResults: { ...(pair(tab).stageResults ?? {}), [id]: r.state } });
+    if (id === "tester") {
+      const sha = await snapshot(pair(tab), `round-${round}-tested`, `coderwriter: round ${round} after the tester`);
+      if (sha) update(tab, { tested: { ...(pair(tab).tested ?? {}), [round]: sha } });
+    }
   }
   const file = `${REVIEW_DIR}/review-${round}.md`;
   const w = await sh(pair(tab), 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1"', [file, combine(round, results)]);
@@ -688,7 +733,7 @@ export async function openSpace(folder) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, max, auto, lens = false, team = false }) {
+export async function start({ space, folder, task, writer, reviewer, tester = null, max, auto, lens = false, team = false }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -706,10 +751,12 @@ export async function start({ space, folder, task, writer, reviewer, max, auto, 
   };
   const w = await launch("writer", writer);
   const r = await launch("reviewer", reviewer);
+  const tt = team && tester ? await launch("tester", tester) : null;
   update(tab, {
     tab, space: space.id, machine, folder, task,
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
+    ...(team ? { stages: teamStageIds(tt), roles: tt ? { tester: { agent: tester.key, name: tester.name, t: tt } } : {} } : {}),
     round: 0, max, auto, lens, kind: team ? "team" : "pair", verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
   // Round 0: the files before the writer touches them (no-op outside a git repo).

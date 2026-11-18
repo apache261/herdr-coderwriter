@@ -1,5 +1,6 @@
 // coderwriter's pane header (a clone of Herdr's `pane`). A terminal labelled
-// coderwriter.role=writer|reviewer gets a colored role chip (WRITER / REVIEWER),
+// coderwriter.role=writer|reviewer|tester gets a colored role chip (WRITER / REVIEWER /
+// TESTER; a team's writer is the CODER),
 // a tinted header and a status badge for every agent status; any other pane
 // looks like Herdr's own header. Props from the app: { pane, terminal }.
 
@@ -10,6 +11,7 @@ import { panes, props, run, theme, home, layout, terminals, shared } from "herdr
 const ROLE = {
   writer: { label: "WRITER", icon: "mods/coderwriter/icons/pen.svg", color: "ansi4" },
   reviewer: { label: "REVIEWER", icon: "mods/coderwriter/icons/search.svg", color: "ansi5" },
+  tester: { label: "TESTER", icon: "mods/coderwriter/icons/flask.svg", color: "ansi3" },
 };
 const STATUS = { working: "working", blocked: "needs you", done: "done", idle: "idle" };
 
@@ -94,7 +96,7 @@ export default class Pane extends View {
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
       .on_click(() => run("pane.focus", { pane }))
       .when(Boolean(role), el => el.child(h_flex().flex_none().gap(5).px(7).h(20).items_center().rounded(5).bg(tint).text_color(t.background)
-        .text_size(10.5).font_bold().child(svg(role.icon).size(11)).child(role.label)))
+        .text_size(10.5).font_bold().child(svg(role.icon).size(11)).child(pair?.kind === "team" && role === ROLE.writer ? "CODER" : role.label)))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))

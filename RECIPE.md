@@ -122,10 +122,16 @@ and dark themes):
   (warning). The limit only stops Auto; Review and Feedback by hand can go past it.
   **Stop** ends the running job and turns Auto off. A Herdr reload pauses running pairs and
   says so.
-- **Team** (`kind: "team"`, the New pair dialog's Team toggle): a round snapshots the files,
-  copies the writer's `.coderwriter/coder.md` to `round-<n>/coder.md`, then runs each stage of
-  `p.stages` (default `tests`, `review`; `tests` only when the folder has a test command) in
-  order, all of them. A stage writes `round-<n>/<stage>.md`, first line `VERDICT: PASS` or
+- **Team** (`kind: "team"`, the New pair dialog's Team toggle, which adds a Tester agent row,
+  Codex by default): three agents, the tester's pane labelled `coderwriter.role=tester`
+  (TESTER chip, ansi3; the writer's chip reads CODER). A round snapshots the files, copies the
+  writer's `.coderwriter/coder.md` to `round-<n>/coder.md`, then runs each stage of `p.stages`
+  (`tester`, `tests`, `review`; `tests` only when the folder has a test command) in order, all
+  of them. The tester writes or updates unit and functional tests, edits only test files, runs
+  them and the suite, and reports "Tests written:", "Ran:" and numbered findings. After it, the
+  files are snapshotted again (`round-<n>-tested`); next round, test files (by name: `tests/`,
+  `test/`, `__tests__/`, `spec/`, `*.test.*`, `*.spec.*`, `*_test.go`, `test_*.py`, `*_test.py`)
+  the coder changed since then fail a `Test files` check, and the tester is told to check them. A stage writes `round-<n>/<stage>.md`, first line `VERDICT: PASS` or
   `VERDICT: FAIL`, then numbered findings (`tests` is coderwriter's own: the command's result
   and its last 60 lines). coderwriter writes `review-<n>.md`: `VERDICT: APPROVED`,
   `CHANGES_REQUESTED` or `INCOMPLETE` (a stage wrote no report or no verdict: Auto pauses),

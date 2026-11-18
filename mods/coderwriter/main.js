@@ -115,8 +115,8 @@ class Bar {
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key) => agentFor(key, list);
-        const w = pick(pr.writer), r = pick(pr.reviewer);
-        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer]]) {
+        const w = pick(pr.writer), r = pick(pr.reviewer), tt = pr.team ? pick(pr.tester) : null;
+        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester]] : [])]) {
           if (P.isCustom(key) && !a.custom) throw new Error(`The ${role} model was removed: pick another`);
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
@@ -125,7 +125,7 @@ class Bar {
         if (!req) { this.input.set_value(""); this.task = ""; }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }

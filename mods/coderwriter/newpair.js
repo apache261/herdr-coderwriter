@@ -16,7 +16,7 @@ const activeSpace = () => spaces().find((s) => s.active) ?? null;
 const shortName = (a) => a.name.replace(" Code", "");
 
 export function openNewPair() {
-  openOverlay({ mod: "coderwriter", kind: "dialog", width: 540, height: 520, props: { role: "newpair" } });
+  openOverlay({ mod: "coderwriter", kind: "dialog", width: 540, height: 590, props: { role: "newpair" } });
 }
 
 export class NewMenu {
@@ -59,12 +59,12 @@ export class NewPair {
 
   chosen() {
     const pr = P.prefs(), list = known(this.machine);
-    return { pr, w: agentFor(pr.writer, list), r: agentFor(pr.reviewer, list) };
+    return { pr, w: agentFor(pr.writer, list), r: agentFor(pr.reviewer, list), tt: pr.team ? agentFor(pr.tester, list) : null };
   }
 
   problem() {
-    const { w, r } = this.chosen();
-    for (const [role, a] of [["writer", w], ["reviewer", r]]) {
+    const { w, r, tt } = this.chosen();
+    for (const [role, a] of [["writer", w], ["reviewer", r], ...(tt ? [["tester", tt]] : [])]) {
       if (a.installed === false) return a.custom ? `The ${role} model runs through Codex, which is not installed` : `The ${role} agent (${a.name}) is not installed`;
     }
     return null;
@@ -119,7 +119,7 @@ export class NewPair {
     const t = theme();
     const { pr } = this.chosen();
     const problem = this.problem();
-    const keys = [...new Set([pr.writer, pr.reviewer].map((k) => (P.isCustom(k) ? "codex" : k)))];
+    const keys = [...new Set([pr.writer, pr.reviewer, ...(pr.team ? [pr.tester] : [])].map((k) => (P.isCustom(k) ? "codex" : k)))];
     const danger = keys.some(isDangerous);
     const setMax = (n) => P.setPrefs({ max: Math.max(1, Math.min(10, n)) });
     const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team);
@@ -142,6 +142,9 @@ export class NewPair {
         .child(v_flex().gap(6).child(h_flex().gap(6).items_center()
           .child(svg(I("search")).size(12).text_color(t[ROLE_COLOR.reviewer])).child(this.label(t, "Reviewer")))
           .child(this.agents(t, "reviewer")))
+        .when(team, (el) => el.child(v_flex().gap(6).child(h_flex().gap(6).items_center()
+          .child(svg(I("flask")).size(12).text_color(t[ROLE_COLOR.tester])).child(this.label(t, "Tester")))
+          .child(this.agents(t, "tester"))))
         .child(v_flex().gap(6)
           .child(this.label(t, "Folder"))
           .child(h_flex().id("folder").h(30).px(10).gap(7).items_center().rounded(7).border_1().border_color(t.border).bg(t.background)
@@ -163,7 +166,7 @@ export class NewPair {
           .child(h_flex().id("team").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
             .border_1().border_color(team ? t.accent : t.border).bg(team ? t.selected : t.background)
             .cursor_pointer().hover((s) => s.bg(t.hover))
-            .tooltip("Each round runs every check (tests, then review) and sends all failures to the writer in one note")
+            .tooltip("A tester agent writes and runs the tests, then the test command and the reviewer; all failures go to the writer in one note")
             .on_click((_e, cx) => { P.setPrefs({ team: !team }); cx.notify(); })
             .child(svg(I("repeat")).size(13).text_color(team ? t.accent : t.dim))
             .child("Team")
