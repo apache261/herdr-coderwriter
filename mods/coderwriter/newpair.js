@@ -177,7 +177,8 @@ export class NewPair {
               if (picked) { this.folder = picked; cx.notify(); }
             }))
             .child(svg(I("folder")).size(13).text_color(t.dim))
-            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(tilde(this.folder)))
+            .child(div().flex_none().font_medium().text_color(t.foreground).child(this.folder.replace(/\/+$/, "").split("/").pop() || "/"))
+            .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(tilde(this.folder)))
             .child(div().flex_none().text_size(11.5).text_color(t.dim).child("Change…"))))
         .child(v_flex().gap(6)
           .child(this.label(t, "Task"))
