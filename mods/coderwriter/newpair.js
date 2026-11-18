@@ -81,12 +81,13 @@ export class NewPair {
   chosen() {
     const pr = P.prefs(), list = known(this.machine);
     return { pr, w: agentFor(pr.writer, list, "writer"), r: agentFor(pr.reviewer, list, "reviewer"),
-      tt: pr.team ? agentFor(pr.tester, list, "tester") : null, pm: pr.team ? agentFor(pr.pm, list, "pm") : null };
+      tt: pr.team ? agentFor(pr.tester, list, "tester") : null, pm: pr.team ? agentFor(pr.pm, list, "pm") : null,
+      dd: pr.team && pr.docsOn ? agentFor(pr.docs, list, "docs") : null };
   }
 
   problem() {
-    const { w, r, tt, pm } = this.chosen();
-    for (const [role, a] of [[tt ? "coder" : "writer", w], ["reviewer", r], ...(tt ? [["tester", tt], ["PM", pm]] : [])]) {
+    const { w, r, tt, pm, dd } = this.chosen();
+    for (const [role, a] of [[tt ? "coder" : "writer", w], ["reviewer", r], ...(tt ? [["tester", tt], ["PM", pm]] : []), ...(dd ? [["docs writer", dd]] : [])]) {
       if (a.installed === false) return a.cmd ? `Type the ${role}'s command` : a.custom ? `The ${role} model runs through Codex, which is not installed` : `The ${role} agent (${a.name}) is not installed`;
     }
     return null;
@@ -138,15 +139,44 @@ export class NewPair {
   // One role: its name (in a team the writer is the Coder) and its agents.
   roleRow(t, role, team) {
     const head = { writer: ["pen", team ? "Coder" : "Writer"], reviewer: ["search", team ? "Reviewer: quality, then security" : "Reviewer"],
-      tester: ["flask", "Tester: writes and runs the tests"], pm: ["list", "PM: you give it the task; it plans, you approve"] }[role];
+      tester: ["flask", "Tester: writes and runs the tests"], pm: ["list", "PM: you give it the task; it plans, you approve"],
+      docs: ["book", "Docs writer: updates README, changelog and docs at the end"] }[role];
+    const pr = P.prefs(), off = role === "docs" && !pr.docsOn;
     return v_flex().gap(6)
-      .child(h_flex().gap(6).items_center().child(svg(I(head[0])).size(12).text_color(t[ROLE_COLOR[role]])).child(this.label(t, head[1])))
-      .child(this.agents(t, role));
+      .child(h_flex().gap(6).items_center().child(svg(I(head[0])).size(12).text_color(t[ROLE_COLOR[role]])).child(this.label(t, head[1]))
+        .when(role === "docs", (el) => el.child(div().flex_1()).child(this.toggle(t, "docs-on", pr.docsOn, () => P.setPrefs({ docsOn: !pr.docsOn })))))
+      .when(!off, (el) => el.child(this.agents(t, role)).child(this.tune(t, role)));
+  }
+
+  // A small on/off switch.
+  toggle(t, id, on, flip) {
+    return div().id(id).w(26).h(15).rounded(8).p(2).flex().items_center().cursor_pointer().bg(on ? t.accent : t.border).when(on, (el) => el.justify_end())
+      .on_click((_e, cx) => { flip(); cx.notify(); })
+      .child(div().size(11).rounded(6).bg(on ? t.accent_foreground : t.background));
+  }
+
+  // The role's model and effort for Claude Code (both) or Codex (effort): each chip steps
+  // to the next value; "default" leaves it to the agent.
+  tune(t, role) {
+    const pr = P.prefs(), key = pr[role], models = P.MODELS[key], efforts = P.EFFORTS[key];
+    if (!efforts) return div();
+    const cur = pr.tune[role] ?? {};
+    const chip = (id, label, list, field) => {
+      const v = cur[field] ?? "", next = list[(list.indexOf(v) + 1) % list.length];
+      return h_flex().id(`${role}-${id}`).h(24).px(8).gap(5).items_center().flex_none().rounded(6).border_1().border_color(t.border).bg(t.background)
+        .text_size(11.5).cursor_pointer().hover((s) => s.bg(t.hover))
+        .tooltip(`Click for the next one: ${list.map((x) => x || "default").join(", ")}`)
+        .on_click((_e, cx) => { P.setPrefs({ tune: { ...pr.tune, [role]: { ...cur, [field]: next } } }); cx.notify(); })
+        .child(div().text_color(t.dim).child(label)).child(div().text_color(v ? t.foreground : t.muted).font_medium().child(v || "default"));
+    };
+    return h_flex().gap(6).items_center()
+      .when(Boolean(models), (el) => el.child(chip("model", "Model", models, "model")))
+      .child(chip("effort", "Effort", efforts, "effort"));
   }
 
   link(t, id, icon, text, onClick) {
     return h_flex().id(id).gap(5).items_center().text_color(t.muted).cursor_pointer()
-      .hover((s) => s.text_color(t.foreground)).on_click(() => onClick())
+      .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { onClick(); cx.notify(); })
       .child(svg(I(icon)).size(12)).child(text);
   }
 
@@ -199,8 +229,8 @@ export class NewPair {
     const t = theme();
     const { pr } = this.chosen();
     const problem = this.problem();
-    const keys = [...new Set([pr.writer, pr.reviewer, ...(pr.team ? [pr.tester, pr.pm] : [])].map((k) => (P.isCustom(k) ? "codex" : k)))];
-    const danger = keys.some(isDangerous) || [["writer", pr.writer], ["reviewer", pr.reviewer], ...(pr.team ? [["tester", pr.tester], ["pm", pr.pm]] : [])]
+    const keys = [...new Set([pr.writer, pr.reviewer, ...(pr.team ? [pr.tester, pr.pm, ...(pr.docsOn ? [pr.docs] : [])] : [])].map((k) => (P.isCustom(k) ? "codex" : k)))];
+    const danger = keys.some(isDangerous) || [["writer", pr.writer], ["reviewer", pr.reviewer], ...(pr.team ? [["tester", pr.tester], ["pm", pr.pm], ["docs", pr.docs]] : [])]
       .some(([role, k]) => k === P.CMD && riskyCommand(pr.commands[role]));
     const setMax = (n) => P.setPrefs({ max: Math.max(1, Math.min(10, n)) });
     const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team);
@@ -231,10 +261,11 @@ export class NewPair {
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
           .child(div().text_size(11).text_color(t.dim).child(team ? "Leave it empty to tell the PM yourself, in its pane." : "Leave it empty to type the task into the writer yourself.")))
-        .children((team ? ["pm", "writer", "tester", "reviewer"] : ["writer", "reviewer"]).map((role) => this.roleRow(t, role, team)))
+        .children((team ? ["pm", "writer", "tester", "reviewer", "docs"] : ["writer", "reviewer"]).map((role) => this.roleRow(t, role, team)))
         .child(h_flex().gap(14).items_center().text_size(11.8)
           .child(this.link(t, "np-launch", "terminal", "Launch flags…",
             () => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } })))
+          .child(this.link(t, "np-recommended", "check", "Recommended setup", () => P.useRecommended()))
           .child(this.link(t, "np-models", "cpu", "Custom models…",
             () => openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }))))
         .child(h_flex().gap(10).items_center()

@@ -80,7 +80,9 @@ class Bar {
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key, role) => agentFor(key, list, role);
         const w = pick(pr.writer, "writer"), r = pick(pr.reviewer, "reviewer"), tt = pr.team ? pick(pr.tester, "tester") : null, pm = pr.team ? pick(pr.pm, "pm") : null;
-        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester], ["PM", pm, pr.pm]] : [])]) {
+        const docs = pr.team && pr.docsOn ? pick(pr.docs, "docs") : null;
+        for (const [role, a, key] of [["writer", w, pr.writer], ["reviewer", r, pr.reviewer], ...(tt ? [["tester", tt, pr.tester], ["PM", pm, pr.pm]] : []),
+          ...(docs ? [["docs writer", docs, pr.docs]] : [])]) {
           if (P.isCustom(key) && !a.custom) throw new Error(`The ${role} model was removed: pick another`);
           if (a?.cmd && !a.command) throw new Error(`The ${role}'s command is empty: type it in New pair…`);
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
@@ -95,7 +97,7 @@ class Bar {
         }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, max: pr.max, auto: pr.auto && Boolean(task),
+        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, docs, max: pr.max, auto: pr.auto && Boolean(task),
           lens: Boolean(pr.lens), team: Boolean(pr.team), worktree, turnLimit: pr.turnLimit ?? 30 });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
@@ -204,6 +206,11 @@ class Bar {
       const s = checking && p.stage === id ? "active" : r === "pass" ? "pass" : r === "fail" ? "fail" : r ? "unknown" : "pending";
       steps.push({ id, icon: icons[id] ?? "search", name: P.STAGES[id]?.name ?? id, s,
         tip: { active: "checking", pass: `passed round ${p.round}`, fail: `failed round ${p.round}`, unknown: "no result", pending: "" }[s] });
+    }
+    if (p.roles?.docs) {
+      const s = p.phase === "documenting" ? "active" : p.docsOther?.length ? "fail" : p.plan?.done ? "pass" : "pending";
+      steps.push({ id: "docs", icon: "book", name: "Docs", s,
+        tip: { active: "updating the documentation", fail: `changed more than docs: ${(p.docsOther ?? []).join(", ")}`, pass: "documentation updated", pending: "at the end" }[s] });
     }
     const color = { active: t.working, pass: ok, fail: t.blocked, you: t.accent, unknown: t.dim, pending: t.dim };
     const plan = p.plan?.approved && !p.plan.done ? `${p.plan.at + 1}/${p.plan.tasks.length}` : null;

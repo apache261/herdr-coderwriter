@@ -79,10 +79,11 @@ export class Reviews {
   fileFor(view, n) {
     if (view === "plan") return P.PLAN;
     if (view === "report") return P.REPORT;
+    if (view === "docs") return P.DOCS;
     if (view === "tests") return `${P.REVIEW_DIR}/tests-${n}.txt`;
     return `${P.REVIEW_DIR}/round-${n}/${view}.md`;
   }
-  viewKey(view, n) { return ["plan", "report"].includes(view) ? view : `${n}:${view}`; }
+  viewKey(view, n) { return ["plan", "report", "docs"].includes(view) ? view : `${n}:${view}`; }
   async loadView(folder, opts) {
     const n = this.selected ?? this.rounds[this.rounds.length - 1]?.n ?? 0;
     let text = null;
@@ -170,7 +171,7 @@ export class Reviews {
     const stageIds = (pair?.stages ?? []).filter((id) => id !== "tests" || (current && this.names.has(`tests-${current.n}.txt`)));
     const views = !team ? [] : [
       ...(current ? [["summary", "Summary"], ["coder", "Coder notes"], ...stageIds.map((id) => [id, P.STAGES[id]?.name ?? id])] : []),
-      ...(this.names.has("plan.md") ? [["plan", "Plan"]] : []), ...(this.names.has("report.md") ? [["report", "Report"]] : []),
+      ...(this.names.has("plan.md") ? [["plan", "Plan"]] : []), ...(this.names.has("docs.md") ? [["docs", "Docs"]] : []), ...(this.names.has("report.md") ? [["report", "Report"]] : []),
     ];
     const view = views.some(([v]) => v === this.view) ? this.view : "summary";
     const viewChips = views.length < (current ? 2 : 1) ? null : h_flex().id("rv-views").flex_none().flex_wrap().gap(4).px(10).py(6).border_b(1).border_color(t.border)
@@ -189,7 +190,7 @@ export class Reviews {
 
     let content;
     if (!folder) content = empty("No folder", "Focus a terminal to see its reviews.");
-    else if (["plan", "report"].includes(view)) content = div().id("rv-body").flex_1().min_h(0).overflow_y_scrollbar()
+    else if (["plan", "report", "docs"].includes(view)) content = div().id("rv-body").flex_1().min_h(0).overflow_y_scrollbar()
       .child(div().px(12).py(10).text_size(12.5).text_color(t.foreground).child(TextView.markdown(`rv-${view}`, otherText).selectable(true)));
     else if (!current) content = empty(this.loading ? "Looking for reviews…" : "No reviews yet",
       pair ? "Press Review in the bar above once the writer is done." : "Start a writer/reviewer pair from the bar above; each review round shows here.");

@@ -7,8 +7,8 @@ work before you see it.
   they loop until the reviewer approves or a round limit is reached.
 - **Team** (preview): you give the task to a **PM**, which plans it with you. Then, subtask by
   subtask, a **Coder** writes, a **Tester** writes and runs the tests, and a **Reviewer** checks
-  quality and security, round after round, until every check passes. The PM writes a report
-  at the end.
+  quality and security, round after round, until every check passes. At the end an optional
+  **Docs writer** brings the documentation up to date, and the PM writes a report.
 
 Nothing is ever committed: the work stays uncommitted for you to review and commit. By
 default it happens in a **git worktree of its own** (a new branch from your last commit), so
@@ -34,7 +34,7 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
               for each subtask:  Coder ─▶ Tester ─▶ Tests ─▶ Quality ─▶ Security
                                    ▲                                       │
                                    └────── every failure, in one note ◀────┘
-              all subtasks pass ─▶ PM's report ─▶ offer of a full audit
+              all subtasks pass ─▶ Docs writer ─▶ PM's report ─▶ offer of a full audit
 ```
 
 - **PM** reads the repository, asks you what's unclear in its pane, and writes
@@ -50,6 +50,10 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   - **Security**: the reviewer, on this change only (injection, path traversal, XSS, auth,
     secrets, SSRF, CSRF, crypto, dependencies, data exposure), real issues only, using the
     principles of Cloudflare's skill when installed.
+- **Docs writer** (optional, on by default; a switch in its row): once every subtask has
+  passed, it updates the README, the changelog, `docs/` and other Markdown to match the change,
+  in the project's style, and says what it changed in `.coderwriter/docs.md`. It edits
+  documentation only: anything else it changes is named in a warning before you commit.
 - **Test files are the tester's**: files are snapshotted after the tester runs, and a coder
   that edits a test gets it back as a finding (the tester is told to check it).
 - **On screen**: the team's tab is a 2×2 grid in the order the work flows (PM over Coder,
@@ -76,17 +80,21 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   pane, and Review or Feedback carry on.
 - **The bar follows the shown tab**: in a pair's or team's tab it shows only that one's
   status and **Review**, **Feedback**, **Plan**, **Audit**, **Auto**, **Stop**.
-- **Any agent per role**: any agent Herdr knows and finds installed (Claude Code, Codex,
-  Copilot, …), a custom model, or **Command**: a command line of your own, for instance the
-  same model at another effort:
+- **Any agent per role, with its own model and effort**: any agent Herdr knows and finds
+  installed (Claude Code, Codex, Copilot, …), a custom model, or **Command** (a command line
+  of your own). For Claude Code each role also has **Model** and **Effort** (Codex: effort),
+  added to its launch with your launch flags. The default, and **Recommended setup** in the
+  dialog, is Claude Code everywhere:
 
-  | Role | Command |
-  |---|---|
-  | PM | `claude --model opus --effort high` |
-  | Coder | `claude --model opus --effort medium` |
-  | Reviewer | `codex --no-daemon -m gpt-5 -c model_reasoning_effort=high` |
+  | Role | Model | Effort | Why |
+  |---|---|---|---|
+  | PM | opus | high | planning, asking the right questions |
+  | Coder / writer | opus | medium | strong code, quicker turns (it works every round) |
+  | Tester | sonnet | medium | writing tests is well specified |
+  | Reviewer | opus | high | finding bugs and security holes pays off most |
+  | Docs writer | sonnet | low | prose from a known change |
 
-  A command replaces the launch flags, so add the ones you want. Use agents Herdr shows a
+  A Command replaces the launch flags, so add the ones you want. Use agents Herdr shows a
   status for: coderwriter waits for each turn to end by it.
 - **Audits after approval**: when the work is approved, a dialog asks whether the reviewer
   should also run Cloudflare's [security audit](https://github.com/cloudflare/security-audit-skill)
@@ -166,6 +174,7 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
 | `round-<n>/<check>.md` | a team's per-check reports: `tester`, `quality`, `security`, and the coder's notes `coder.md` |
 | `coder.md` | the team coder's latest notes on what it changed |
 | `plan.md`, `report.md` | the team PM's plan and final report |
+| `docs.md` | what the docs writer updated |
 | `security-audit/` | the security audit's working files |
 
 ## What it runs and reads

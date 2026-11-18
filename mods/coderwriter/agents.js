@@ -7,7 +7,7 @@ import { modelLabel } from "./models.js";
 
 export const I = (name) => `mods/coderwriter/icons/${name}.svg`;
 const KNOWN = "coderwriter.agents";
-export const ROLE_COLOR = { writer: "ansi4", reviewer: "ansi5", tester: "ansi3", pm: "ansi6" };
+export const ROLE_COLOR = { writer: "ansi4", reviewer: "ansi5", tester: "ansi3", pm: "ansi6", docs: "ansi2" };
 
 export function tilde(path) {
   if (!path) return "";

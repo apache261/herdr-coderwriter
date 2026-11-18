@@ -8,16 +8,41 @@ import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTex
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
 export const AGENTS = ["claude", "codex"]; // the agents with launch flags (the Launch popup)
+// Each role's model and effort, added to its agent's launch: Claude Code takes both
+// (--model, --effort), Codex the effort (model_reasoning_effort). "" means the agent's own.
+// The recommended setup: Claude Code everywhere, the strongest model where judgment pays
+// (planning, reviewing), lighter where the job is well specified (tests, docs).
+export const RECOMMENDED = {
+  pm: { agent: "claude", model: "opus", effort: "high" },
+  writer: { agent: "claude", model: "opus", effort: "medium" },
+  tester: { agent: "claude", model: "sonnet", effort: "medium" },
+  reviewer: { agent: "claude", model: "opus", effort: "high" },
+  docs: { agent: "claude", model: "sonnet", effort: "low" },
+};
+export const MODELS = { claude: ["", "opus", "sonnet", "haiku"] };
+export const EFFORTS = { claude: ["", "low", "medium", "high", "xhigh", "max"], codex: ["", "low", "medium", "high"] };
+export function useRecommended() {
+  const pr = prefs();
+  setPrefs({ ...Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, d.agent])),
+    tune: Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, { model: d.model, effort: d.effort }])), commands: pr.commands });
+}
+function tuneArgs(key, role) {
+  const t = role ? prefs().tune[role] ?? {} : {};
+  if (key === "claude") return [...(t.model ? ["--model", t.model] : []), ...(t.effort ? ["--effort", t.effort] : [])];
+  if (key === "codex") return t.effort ? ["-c", `model_reasoning_effort="${t.effort}"`] : [];
+  return [];
+}
 // A role's own command line (prefs.commands[role]) instead of an agent: agent key "cmd".
 export const CMD = "cmd";
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, team: false, tester: "codex", pm: "claude", worktree: true, turnLimit: 30, ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "claude", max: 3, auto: false, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
-  p.commands = { writer: "", reviewer: "", tester: "", pm: "", ...(p.commands ?? {}) };
+  p.commands = { writer: "", reviewer: "", tester: "", pm: "", docs: "", ...(p.commands ?? {}) };
+  p.tune = Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, { model: d.model, effort: d.effort, ...(p.tune?.[role] ?? {}) }]));
   p.tests = p.tests && typeof p.tests === "object" ? p.tests : {};
   return p;
 }
@@ -95,14 +120,15 @@ export function joinArgs(args) {
   return args.map((a) => (a === "" ? "''" : /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(" ");
 }
 
-// The argv a pair starts an agent with: its base command plus the person's flags.
-export function launchArgv(agent) {
+// The argv a pair starts an agent with: its base command plus the person's flags, plus
+// (with a role) that role's model and effort.
+export function launchArgv(agent, role = null) {
   if (agent.key === CMD) return splitArgs(agent.command ?? "");
   const m = customModel(agent.key);
   // Custom models run Codex, so they take Codex's flags.
   if (m) return [...customArgv(m), ...splitArgs(prefs().flags.codex ?? "")];
   const base = BASE_RUN[agent.key] ?? agent.run;
-  return [...base, ...splitArgs(prefs().flags[agent.key] ?? "")];
+  return [...base, ...splitArgs(prefs().flags[agent.key] ?? ""), ...tuneArgs(agent.key, role)];
 }
 export function setPrefs(patch) { setShared(PREFS, { ...prefs(), ...patch }); }
 
@@ -491,7 +517,7 @@ async function teamRound(tab, g) {
 // subtasks to the coder one by one, each through the team's rounds until approved, and the
 // PM writes .coderwriter/report.md at the end. The PM only plans and reports: the hand-offs
 // are this code, so a confused agent can't derail them.
-export const PLAN = `${REVIEW_DIR}/plan.md`, REPORT = `${REVIEW_DIR}/report.md`;
+export const PLAN = `${REVIEW_DIR}/plan.md`, REPORT = `${REVIEW_DIR}/report.md`, DOCS = `${REVIEW_DIR}/docs.md`;
 export function pmBrief(task) {
   return `You are the PM (project manager) of a small team in this folder: a CODER writes the code, a TESTER writes and runs the tests, ` +
     `and a REVIEWER checks quality and security. You plan and report; you don't write code or tests. ` +
@@ -507,6 +533,7 @@ const reviseBrief = (text) => `The user wants changes to the plan: ${text}\n\nRe
 function reportBrief(p) {
   const n = p.plan.tasks.length;
   return `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security). ` +
+    (roleOf(p, "docs") ? `The docs writer updated the documentation (see ${DOCS}). ` : "") +
     `Write a short report for the user to ${REPORT}: for each subtask what was done (see ${CODER_NOTES}, the reports in ` +
     `${REVIEW_DIR}/round-*/ and git diff), the tests added, anything still open or worth a second look, and what to check before ` +
     `committing. Change no file except ${REPORT}. Then stop.`;
@@ -567,6 +594,38 @@ async function startSubtask(tab, g, at) {
   update(tab, { phase: "written", note: `Subtask ${at + 1}/${q.plan.tasks.length}: written, ready for review` });
 }
 
+// ---- the docs writer ------------------------------------------------------------
+// An optional fifth agent. Once every subtask has passed, it brings the documentation up
+// to date (README, changelog, docs/, other Markdown) and says what it changed in
+// .coderwriter/docs.md; then the PM reports. It may edit documentation only: what else
+// it changed is named in a warning (its turn is snapshotted on both sides).
+const DOC_PATH = /(^|\/)(docs?|documentation)\/|\.(md|mdx|rst|adoc)$|(^|\/)(README|CHANGELOG|CHANGES|HISTORY|CONTRIBUTING|LICENSE)(\.[a-z]+)?$/i;
+function docsBrief(p) {
+  const base = p.checkpoints?.[0];
+  return `You are the DOCS WRITER of a team in this folder. The coder's work on ${p.task ? `"${p.task.replace(/\s+/g, " ")}"` : "the task"} ` +
+    `is done and passed the tests and the quality and security checks: the plan is ${PLAN}, the coder's notes ${CODER_NOTES}, ` +
+    `and the whole change is ${base ? `\`git diff ${base}\` (plus untracked files)` : "git status and git diff"}; ignore ${REVIEW_DIR}/. ` +
+    `Bring the documentation up to date with it: the README (what it does, how to install and use it), the changelog if the ` +
+    `project keeps one, docs/ and other Markdown, and doc comments only where the project already has them. Match the existing ` +
+    `style; add nothing the change doesn't need, and don't invent features. Edit documentation only, never code or tests. ` +
+    `Then write to ${DOCS} what you updated and why, file by file (or that nothing needed changing). Then stop.`;
+}
+async function writeDocs(tab, g) {
+  const p = pair(tab), docs = roleOf(p, "docs");
+  if (!docs?.t) return;
+  update(tab, { phase: "documenting", note: "All subtasks approved: the docs writer is updating the documentation" });
+  const before = await snapshot(p, "before-docs", "coderwriter: before the docs writer");
+  await say(tab, g, docs.t, "docs", docsBrief(pair(tab)));
+  const after = await snapshot(pair(tab), "after-docs", "coderwriter: after the docs writer");
+  if (!before || !after) return;
+  const r = await sh(pair(tab), 'git diff --name-only "$1" "$2"', [before, after]).catch(() => null);
+  const changed = (r?.stdout ?? "").split("\n").filter(Boolean);
+  const other = changed.filter((f) => !DOC_PATH.test(f) && !f.startsWith(`${REVIEW_DIR}/`));
+  update(tab, { docsChanged: changed.filter((f) => !f.startsWith(`${REVIEW_DIR}/`)), docsOther: other });
+  if (other.length) notify({ title: "coderwriter: the docs writer changed code", body: `Not documentation: ${other.join(", ")}. Check them before you commit.`,
+    level: "warning", action: { name: "tab.select", args: { id: tab } } });
+}
+
 // A subtask was approved: hand out the next one, or have the PM report. "next" or "done".
 async function afterApproval(tab, g) {
   const p = pair(tab), n = p.plan.tasks.length;
@@ -575,6 +634,7 @@ async function afterApproval(tab, g) {
     await startSubtask(tab, g, p.plan.at + 1);
     return "next";
   }
+  await writeDocs(tab, g);
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
   await say(tab, g, roleOf(p, "pm").t, "pm", reportBrief(p));
   update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
@@ -954,20 +1014,21 @@ async function placePane(t, beside, place, up) {
   run("pane.focus", { terminal: t });
   run("pane.swap", { direction: "up" });
 }
-async function arrangeTeam(w, r, tt, pm) {
+async function arrangeTeam(w, r, tt, pm, docs = null) {
   try {
     if (await waitPane(w)) {
       await placePane(r, w, "right", false);
       if (pm) await placePane(pm, w, "down", true);
       if (tt && hasPane(r)) await placePane(tt, r, "down", true);
+      if (docs && hasPane(r)) await placePane(docs, r, "down", false); // under the reviewer
     }
   } catch { /* placed below */ }
-  for (const t of [r, tt, pm]) if (t && !hasPane(t)) { run("terminal.keep", { terminal: t, place: "right" }); await waitPane(t); }
+  for (const t of [r, tt, pm, docs]) if (t && !hasPane(t)) { run("terminal.keep", { terminal: t, place: "right" }); await waitPane(t); }
   run("pane.focus", { terminal: pm ?? w }); // you talk to the PM first
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, max, auto, lens = false, team = false, worktree = null, turnLimit = 30 }) {
+export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, docs = null, max, auto, lens = false, team = false, worktree = null, turnLimit = 30 }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -980,7 +1041,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     const args = ["run", "--bg", "--keep", "--json", "--no-parent", "--cwd", folder];
     if (machine) args.push("--on", machine);
     if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
-    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent));
+    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent, role));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
     return r.address;
@@ -989,7 +1050,9 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const r = await launch("reviewer", reviewer, !team);
   const tt = team && tester ? await launch("tester", tester, false) : null;
   const pmT = team && pm ? await launch("pm", pm, false) : null;
-  const roles = { ...(tt ? { tester: { agent: tester.key, name: tester.name, t: tt } } : {}), ...(pmT ? { pm: { agent: pm.key, name: pm.name, t: pmT } } : {}) };
+  const dT = team && docs ? await launch("docs", docs, false) : null;
+  const role = (a, t) => (t ? { agent: a.key, name: a.name, t } : null);
+  const roles = Object.fromEntries(Object.entries({ tester: role(tester, tt), pm: role(pm, pmT), docs: role(docs, dT) }).filter(([, v]) => v));
   update(tab, {
     tab, space: space.id, machine, folder, task,
     writer: { agent: writer.key, name: writer.name, t: w },
@@ -1007,7 +1070,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const title = task ? `cw · ${task.replace(/\s+/g, " ").slice(0, 28)}` : "coderwriter";
   run("tab.rename", { id: tab, name: title });
   run("tab.select", { id: tab });
-  if (team) await arrangeTeam(w, r, tt, pmT);
+  if (team) await arrangeTeam(w, r, tt, pmT, dT);
   await job(tab, async (g) => {
     if (pmT) {
       // A plan from an earlier team in this folder must not pass for the new one.
@@ -1032,7 +1095,7 @@ export function resumeNote() {
   const all = pairs();
   let changed = false;
   for (const [tab, p] of Object.entries(all)) {
-    if (["starting", "writing", "reviewing", "auditing", "fixing", "planning", "reporting"].includes(p.phase) || p.auto) {
+    if (["starting", "writing", "reviewing", "auditing", "fixing", "planning", "documenting", "reporting"].includes(p.phase) || p.auto) {
       all[tab] = { ...p, auto: false, phase: "paused", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
       changed = true;
     }

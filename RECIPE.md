@@ -231,6 +231,21 @@ and dark themes):
   kept per pair): `say` and `settle` wait at most that long for one turn, counting from the
   send and starting again after a `blocked` stretch; over it, a warning toast ("the <role> is
   taking long", selects the tab) and the job stops with phase `error`, Auto off.
+- **Docs writer** (`prefs.docs`, default Claude; `prefs.docsOn`, default on; the switch in its
+  dialog row; a fifth pane under the reviewer, `coderwriter.role=docs`, DOCS chip in `ansi2`,
+  book icon): after the last subtask is approved and before the PM's report, the files are
+  snapshotted, the docs writer updates README / changelog / `docs/` / Markdown and writes
+  `.coderwriter/docs.md`, the files are snapshotted again, and changed paths that aren't
+  documentation (`docs/`, `doc/`, `documentation/`, `*.md|mdx|rst|adoc`, README / CHANGELOG /
+  CHANGES / HISTORY / CONTRIBUTING / LICENSE with an optional extension) give a warning toast
+  and a red Docs step in the strip (`docsOther`). The PM's report brief points at `docs.md`.
+  Reviews shows it as a Docs view.
+- **Model and effort per role** (`prefs.tune[role] = {model, effort}`): appended to the role's
+  launch after the launch flags: Claude Code `--model <opus|sonnet|haiku> --effort
+  <low|medium|high|xhigh|max>`, Codex `-c model_reasoning_effort="<low|medium|high>"`; ""
+  adds nothing. The dialog shows them as two chips under the role's agents (a click steps to
+  the next value). Defaults and **Recommended setup**: Claude Code for every role; PM opus /
+  high, writer opus / medium, tester sonnet / medium, reviewer opus / high, docs sonnet / low.
 - **Agents per role**: `knownAgents()` (Herdr's programs with a `run`, Claude and Codex first)
   plus custom models (`m:<id>`) plus `cmd`: the role's own command line in
   `prefs.commands[role]`, split shell-style and run as the argv (no launch flags added). The

@@ -1,6 +1,6 @@
 // coderwriter's pane header (a clone of Herdr's `pane`). A terminal labelled
-// coderwriter.role=writer|reviewer|tester|pm gets a colored role chip (WRITER / REVIEWER /
-// TESTER / PM; a team's writer is the CODER),
+// coderwriter.role=writer|reviewer|tester|pm|docs gets a colored role chip (WRITER /
+// REVIEWER / TESTER / PM / DOCS; a team's writer is the CODER),
 // a tinted header and a status badge for every agent status; any other pane
 // looks like Herdr's own header. Props from the app: { pane, terminal }.
 
@@ -13,6 +13,7 @@ const ROLE = {
   reviewer: { label: "REVIEWER", icon: "mods/coderwriter/icons/search.svg", color: "ansi5" },
   tester: { label: "TESTER", icon: "mods/coderwriter/icons/flask.svg", color: "ansi3" },
   pm: { label: "PM", icon: "mods/coderwriter/icons/list.svg", color: "ansi6" },
+  docs: { label: "DOCS", icon: "mods/coderwriter/icons/book.svg", color: "ansi2" },
 };
 const STATUS = { working: "working", blocked: "needs you", done: "done", idle: "idle" };
 
