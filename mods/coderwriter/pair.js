@@ -3,7 +3,7 @@
 // shared("coderwriter.pairs") keyed by the pair's tab id, so the bar and the pane
 // headers (and a reload) see the same thing.
 import { RELAY_PY } from "./relay.js";
-import { exec, shared, setShared, terminals, spaces, run, notify, readTextFile, home } from "herdr";
+import { exec, shared, setShared, terminals, spaces, run, notify, readTextFile, home, openOverlay } from "herdr";
 
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
@@ -11,7 +11,7 @@ export const AGENTS = ["claude", "codex"];
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, ...(shared(PREFS) ?? {}) };
+  const p = { writer: "claude", reviewer: "codex", max: 3, auto: false, lens: false, ...(shared(PREFS) ?? {}) };
   p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -189,11 +189,43 @@ async function say(tab, g, address, role, text) {
   await settle(tab, g, address, role);
 }
 
+// ---- review skills ----------------------------------------------------------------
+// The Ponytail review lens for every round, and two audits the reviewer can run once a
+// round is approved. coderwriter installs nothing: it finds a skill's SKILL.md on the
+// pair's machine (project, user or plugin folders of Claude Code, Codex and the skills
+// CLI) and hands the reviewer its path, so it works whichever agent reviews.
+const PONYTAIL = "Claude Code: /plugin marketplace add DietrichGebert/ponytail, then /plugin install ponytail@ponytail. " +
+  "Codex: codex plugin marketplace add DietrichGebert/ponytail, then codex plugin add ponytail@ponytail";
+export const SKILLS = {
+  lens: { skill: "ponytail-review", name: "Ponytail review", install: PONYTAIL },
+  security: { skill: "security-audit", name: "Security audit", by: "Cloudflare's security-audit skill",
+    install: "npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit --global" },
+  ponytail: { skill: "ponytail-audit", name: "Ponytail code audit", by: "Ponytail's ponytail-audit skill", install: PONYTAIL },
+};
+export const AUDITS = ["security", "ponytail"];
+// shortcut: the first match wins, so of several cached plugin versions the lexically first is used.
+const FIND_SKILL = 'for n in "$@"; do for f in ".claude/skills/$n/SKILL.md" ".agents/skills/$n/SKILL.md" ".codex/skills/$n/SKILL.md" ' +
+  '"$HOME/.claude/skills/$n/SKILL.md" "$HOME/.agents/skills/$n/SKILL.md" "$HOME/.codex/skills/$n/SKILL.md" ' +
+  '"$HOME"/.claude/plugins/cache/*/*/*/skills/"$n"/SKILL.md "$HOME"/.codex/plugins/cache/*/*/*/skills/"$n"/SKILL.md; do ' +
+  'if [ -f "$f" ]; then case "$f" in /*) ;; *) f="$PWD/$f" ;; esac; printf "%s\\t%s\\n" "$n" "$f"; break; fi; done; done';
+// { lens, security, ponytail }: each skill's SKILL.md path, or null.
+export async function findSkills(folder, machine) {
+  const r = await exec("sh", ["-c", FIND_SKILL, "sh", ...Object.values(SKILLS).map((s) => s.skill)],
+    { cwd: folder, timeout: 10000, ...(machine ? { on: machine } : {}) }).catch(() => null);
+  const at = Object.fromEntries((r?.stdout ?? "").split("\n").filter(Boolean).map((l) => l.split("\t")));
+  return Object.fromEntries(Object.entries(SKILLS).map(([k, s]) => [k, at[s.skill] ?? null]));
+}
+// Ask (a dialog) whether to audit the pair now. The dialog sends the answer back to the
+// bar as "coderwriter.audit", which calls audit().
+export function askAudit(tab) {
+  openOverlay({ mod: "coderwriter", kind: "dialog", width: 560, height: 440, props: { role: "audit", tab } });
+}
+
 export function writerBrief(task) {
   return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted. ` +
     `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.)`;
 }
-export function reviewBrief(p, round) {
+export function reviewBrief(p, round, lens = null) {
   const file = `${REVIEW_DIR}/review-${round}.md`;
   const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], prev = cp[round - 1];
   const snaps = !now ? "" : round > 1 && prev
@@ -205,8 +237,25 @@ export function reviewBrief(p, round) {
   return `You are the REVIEWER in a writer/reviewer pair (round ${round}).` +
     (p.task ? ` The writer's task: ${p.task.replace(/\s+/g, " ")}.` : "") +
     ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests +
+    (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: APPROVED" or "VERDICT: CHANGES_REQUESTED",` +
     ` then numbered findings, most important first, each with the file and what to change. Then stop.`;
+}
+// An audit round: the selected audit skills over the whole repository, one review file.
+export function auditBrief(p, round, kinds, found) {
+  const file = `${REVIEW_DIR}/review-${round}.md`;
+  const steps = kinds.map((k) => k === "security"
+    ? ` Security audit: read ${found.security} (Cloudflare's security-audit skill) and follow it on this repository;` +
+      ` keep its working files in ${REVIEW_DIR}/security-audit/, not in your home folder, and if you cannot run sub-agents run its phases yourself.`
+    : ` Code audit: read ${found.ponytail} (the ponytail-audit skill) and follow it on this repository.`).join("");
+  const heads = kinds.map((k) => `"## ${SKILLS[k].name}"`).join(" and ");
+  return `You are the REVIEWER in a writer/reviewer pair.` +
+    (p.verdict === "approved" ? ` Your reviews approved the writer's change; now audit the code (round ${round}).` : ` Audit the code (round ${round}).`) +
+    (p.task ? ` The writer's task was: ${p.task.replace(/\s+/g, " ")}.` : "") +
+    ` Cover the whole repository, starting with the files the change touches (git status, git diff; ignore ${REVIEW_DIR}/).` + steps +
+    ` Do not edit project files. Write the result to ${file}: the first line exactly "VERDICT: APPROVED" (nothing that must be fixed)` +
+    ` or "VERDICT: CHANGES_REQUESTED", then a ${heads} section, each with numbered findings, most important first,` +
+    ` each with the file and what to change. Then stop.`;
 }
 export function feedbackBrief(p) {
   const round = p.round;
@@ -373,9 +422,19 @@ async function job(tab, fn) {
 }
 
 // One review round: tests first (a failure stops here and returns "tests"), then a
-// checkpoint of the files, then the reviewer.
-async function reviewRound(tab, g) {
+// checkpoint of the files, then the reviewer. With `kinds` (["security", "ponytail"])
+// it is an audit round instead; a plain round that approves asks about an audit.
+async function reviewRound(tab, g, kinds = null) {
   let p = pair(tab);
+  const found = kinds || p.lens ? await findSkills(p.folder, p.machine) : {};
+  if (kinds) {
+    const missing = kinds.filter((k) => !found[k]);
+    if (missing.length) throw new Error(`Not installed: ${missing.map((k) => SKILLS[k].skill).join(", ")} (install: ${SKILLS[missing[0]].install})`);
+  }
+  const lens = !kinds && p.lens ? found.lens : null;
+  if (!kinds && p.lens && !lens) {
+    notify({ title: "coderwriter: Ponytail review not installed", body: `Reviewing without it. ${SKILLS.lens.install}`, level: "warning" });
+  }
   await settle(tab, g, p.writer.t, "writer");
   const round = (p.round ?? 0) + 1;
   const passed = await runTests(tab, round);
@@ -386,8 +445,10 @@ async function reviewRound(tab, g) {
   }
   await checkpoint(tab, round);
   p = pair(tab);
-  update(tab, { round, phase: "reviewing", verdict: null, repeats: [], testFixes: 0, note: `Round ${round}: reviewing` });
-  await say(tab, g, p.reviewer.t, "reviewer", reviewBrief(p, round));
+  const what = kinds ? kinds.map((k) => SKILLS[k].name.toLowerCase()).join(" + ") : "reviewing";
+  update(tab, { round, phase: kinds ? "auditing" : "reviewing", verdict: null, repeats: [], testFixes: 0, note: `Round ${round}: ${what}`,
+    ...(kinds ? { audits: { ...(p.audits ?? {}), [round]: kinds } } : {}) });
+  await say(tab, g, p.reviewer.t, "reviewer", kinds ? auditBrief(p, round, kinds, found) : reviewBrief(p, round, lens));
   const v = await verdictOf(pair(tab), round);
   let repeats = [];
   if (v.verdict === "changes" && round > 1) {
@@ -395,7 +456,8 @@ async function reviewRound(tab, g) {
     repeats = repeatedFindings(before.text, v.text);
   }
   const again = repeats.length ? ` · ${repeats.length} repeated from round ${round - 1}` : "";
-  update(tab, { phase: "reviewed", verdict: v.verdict, repeats, note: `Round ${round}: ${v.summary}${again}` });
+  update(tab, { phase: "reviewed", verdict: v.verdict, repeats, note: `Round ${round}${kinds ? " audit" : ""}: ${v.summary}${again}` });
+  if (v.verdict === "approved" && !kinds) askAudit(tab);
   return v.verdict;
 }
 
@@ -456,6 +518,12 @@ async function loop(tab, g) {
 }
 
 export function review(tab) { return job(tab, (g) => reviewRound(tab, g)); }
+export function audit(tab, kinds) {
+  const ok = (kinds ?? []).filter((k) => AUDITS.includes(k));
+  if (!ok.length) return;
+  if (busy[tab]) { notify({ title: "coderwriter", body: "The pair is busy: press Audit again when it's done", level: "warning" }); return; }
+  return job(tab, (g) => reviewRound(tab, g, ok));
+}
 export function feedback(tab) {
   return job(tab, (g) => {
     const p = pair(tab);
@@ -503,7 +571,7 @@ export async function openSpace(folder) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, max, auto }) {
+export async function start({ space, folder, task, writer, reviewer, max, auto, lens = false }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
@@ -525,7 +593,7 @@ export async function start({ space, folder, task, writer, reviewer, max, auto }
     tab, space: space.id, machine, folder, task,
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
-    round: 0, max, auto, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
+    round: 0, max, auto, lens, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
   // Round 0: the files before the writer touches them (no-op outside a git repo).
   await checkpoint(tab, 0);
@@ -555,7 +623,7 @@ export function resumeNote() {
   const all = pairs();
   let changed = false;
   for (const [tab, p] of Object.entries(all)) {
-    if (["starting", "writing", "reviewing", "fixing"].includes(p.phase) || p.auto) {
+    if (["starting", "writing", "reviewing", "auditing", "fixing"].includes(p.phase) || p.auto) {
       all[tab] = { ...p, auto: false, phase: "paused", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
       changed = true;
     }

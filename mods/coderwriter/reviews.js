@@ -96,7 +96,8 @@ export class Reviews {
           .text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover)).cursor_pointer()
           .on_click((_e, cx) => { this.selected = r.n; this.confirm = null; cx.notify(); })
           .child(div().size(6).rounded(3).bg(color[r.verdict]))
-          .child(`Round ${r.n}`);
+          .child(`Round ${r.n}`)
+          .when(Boolean(pair?.audits?.[r.n]), (el) => el.child(svg(I("shield")).size(11).text_color(t.dim)));
       }));
 
     const empty = (title, body) => v_flex().flex_1().items_center().justify_center().gap(6).px(24).text_center()
@@ -139,7 +140,7 @@ export class Reviews {
       pair ? "Press Review in the bar above once the writer is done." : "Start a writer/reviewer pair from the bar above; each review round shows here.");
     else content = v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().px(12).pt(9).pb(3).gap(8).items_center()
-        .child(div().text_size(12).font_semibold().text_color(t.foreground).child(`Round ${current.n}`))
+        .child(div().text_size(12).font_semibold().text_color(t.foreground).child(`Round ${current.n}${pair?.audits?.[current.n] ? " · audit" : ""}`))
         .child(div().px(7).h(18).flex().items_center().rounded(5).bg(color[current.verdict] + "26").text_color(color[current.verdict]).text_size(11).font_semibold().child(label[current.verdict]))
         .child(div().flex_1())
         .when(Boolean(cps[current.n]), (el) => el.child(restoreButton(current.n, `Restore round ${current.n}`))))

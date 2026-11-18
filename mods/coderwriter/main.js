@@ -1,53 +1,24 @@
 // coderwriter: a writer agent and a reviewer agent side by side.
 // props.role: "bar" (default; the strip above the panes), "reviews" (the side
 // panel of review rounds), "usage" (the token usage panel), "launch" (the
-// launch-flags popup) or "pick" (the agent dropdown popup,
-// props.which = "writer" | "reviewer").
+// launch-flags popup), "pick" (the agent dropdown popup, props.which = "writer" |
+// "reviewer"), "new" (the tab bar's + menu), "newpair" (the New pair dialog) or
+// "audit" (the Audit dialog, props.tab).
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { theme, spaces, panes, focused, knownAgents, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
+import { theme, spaces, panes, focused, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
 import * as P from "./pair.js";
 import { Reviews } from "./reviews.js";
 import { Launch, isDangerous, customized } from "./launch.js";
 import { Usage } from "./usage.js";
-import { Models, modelLabel } from "./models.js";
+import { Models } from "./models.js";
 import { Tests } from "./tests.js";
+import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents } from "./agents.js";
+import { NewMenu, NewPair, NEW_PAIR } from "./newpair.js";
+import { Audit, AUDIT_REQ } from "./audits.js";
 
-const I = (name) => `mods/coderwriter/icons/${name}.svg`;
-const KNOWN = "coderwriter.agents";
+export { ROLE_COLOR };
 
-function tilde(path) {
-  if (!path) return "";
-  const h = home();
-  return path === h ? "~" : path.startsWith(h + "/") ? "~" + path.slice(h.length) : path;
-}
-
-function agentIcon(a, size, color) {
-  if (!a?.icon) return div().size(size);
-  return a.tint ? svg(a.icon).size(size).flex_none().text_color(color) : image(a.icon).size(size).flex_none();
-}
-
-// Claude and Codex as knownAgents() reports them, cached per machine.
-function known(machine) { return shared(KNOWN)?.[machine ?? ""] ?? []; }
-async function refreshKnown(machine) {
-  const list = await knownAgents({ on: machine });
-  const ours = list.filter((a) => P.AGENTS.includes(a.key));
-  setShared(KNOWN, { ...(shared(KNOWN) ?? {}), [machine ?? ""]: ours });
-  return ours;
-}
-
-export const ROLE_COLOR = { writer: "ansi4", reviewer: "ansi5" };
-
-// Claude, Codex, or a custom model (which runs Codex, so it's installed when Codex is).
-function agentFor(key, list) {
-  const m = P.customModel(key);
-  if (m) {
-    const codex = list.find((a) => a.key === "codex");
-    return { key, name: modelLabel(m), icon: I("cpu"), tint: true, installed: codex ? codex.installed : null, custom: m };
-  }
-  if (P.isCustom(key)) return { key, name: "Removed model", icon: I("cpu"), tint: true, installed: false };
-  return list.find((a) => a.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false, installed: null };
-}
 const pickerHeight = () => 112 + 31 * P.prefs().models.length + 40;
 
 class Picker {
@@ -61,7 +32,7 @@ class Picker {
     const which = props().which;
     const chosen = P.prefs()[which];
     const list = known(this.machine);
-    const rows = [...P.AGENTS, ...P.prefs().models.map((m) => `m:${m.id}`)].map((key) => agentFor(key, list));
+    const rows = allAgents(list);
     return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
       .child(div().px(9).pt(4).pb(5).text_size(11).text_color(t.dim).child(which === "writer" ? "Writer agent" : "Reviewer agent"))
       .children(rows.map((a) => {
@@ -106,6 +77,8 @@ class Bar {
         const c = await nextCommand();
         const p = this.current();
         if (c === "start") this.start(cx);
+        else if (c === "newpair") { const req = shared(NEW_PAIR); setShared(NEW_PAIR, null); if (req) this.start(cx, req); }
+        else if (c === "audit") { const req = shared(AUDIT_REQ); setShared(AUDIT_REQ, null); if (req) P.audit(req.tab, req.kinds); }
         else if (c === "task") this.input.focus();
         else if (!p) notify({ title: "coderwriter", body: "This tab is not a writer/reviewer pair", level: "info" });
         else if (c === "review") P.review(p.tab);
@@ -128,10 +101,11 @@ class Bar {
     return tab ? P.pair(tab) : null;
   }
 
-  start(cx) {
+  // req: { task, folder } from the New pair dialog; otherwise the bar's own task and folder.
+  start(cx, req = null) {
     if (this.starting) return;
     const pr = P.prefs();
-    const folder = this.folder ?? this.autoFolder();
+    const folder = req?.folder || (this.folder ?? this.autoFolder());
     this.starting = true;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -147,12 +121,11 @@ class Bar {
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
-        const task = this.task.trim();
-        this.input.set_value("");
-        this.task = "";
+        const task = (req ? req.task ?? "" : this.task).trim();
+        if (!req) { this.input.set_value(""); this.task = ""; }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task) });
+        await P.start({ space, folder, task, writer: w, reviewer: r, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens) });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }
@@ -255,6 +228,14 @@ class Bar {
     ], () => { if (p) P.setAuto(p.tab, !on); else P.setPrefs({ auto: !on }); }, { active: on });
   }
 
+  // The Ponytail review lens: the pair's own, or the next pair's (icon only in a pair tab).
+  lensChip(t, p) {
+    const on = p ? Boolean(p.lens) : Boolean(P.prefs().lens);
+    return this.chip(t, "lens", [svg(I("glasses")).size(13).text_color(on ? t.accent : t.dim), ...(p ? [] : [div().child("Ponytail")])],
+      () => { if (p) P.update(p.tab, { lens: !on }); else P.setPrefs({ lens: !on }); },
+      { active: on, tip: `Ponytail review lens ${on ? "on" : "off"}: the reviewer follows the ponytail-review skill each round (if installed)` });
+  }
+
   // The test gate: its last result, and the popup that sets the command.
   testsChip(t, p) {
     const cmd = P.testCommand(p.folder);
@@ -304,7 +285,7 @@ class Bar {
       }), { title: "Folder", tip: compact ? tilde(folder) : undefined }))
       .child(Input.new(this.input).flex_1().min_w(compact ? 80 : 120).h(28).px(9).rounded(7).border_1()
         .border_color(this.inputFocused ? t.accent : t.border).bg(t.background).text_size(12.5).text_color(t.foreground))
-      .when(!p, (el) => el.child(this.rounds(t, null)).child(this.autoToggle(t, null)))
+      .when(!p, (el) => el.child(this.rounds(t, null)).child(this.lensChip(t, null)).child(this.autoToggle(t, null)))
       .child(this.button(t, "start", "play", this.starting ? "Starting…" : "Start", (cx) => this.start(cx), { primary: true, enabled: !this.starting }));
 
     const pairGroup = !p ? null : h_flex().flex_none().gap(6).items_center()
@@ -314,9 +295,11 @@ class Bar {
         .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(this.verdictPill(t, p) ?? div())
       .child(this.testsChip(t, p))
+      .child(this.lensChip(t, p))
       .child(this.rounds(t, p))
       .child(this.button(t, "to-review", "arrow-right", "Review", () => P.review(p.tab), { enabled: !busy }))
       .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && ((p.round ?? 0) > 0 || p.phase === "tests_failed") }))
+      .child(this.button(t, "audit", "shield", "Audit", () => P.askAudit(p.tab), { enabled: !busy }))
       .child(this.autoToggle(t, p))
       .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }));
 
@@ -351,7 +334,8 @@ export default class CoderWriter extends View {
   init(initProps, cx) {
     const role = props()?.role;
     this.inner = role === "pick" ? new Picker() : role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
-      : role === "launch" ? new Launch() : role === "models" ? new Models() : role === "tests" ? new Tests() : new Bar();
+      : role === "launch" ? new Launch() : role === "models" ? new Models() : role === "tests" ? new Tests()
+      : role === "new" ? new NewMenu() : role === "newpair" ? new NewPair() : role === "audit" ? new Audit() : new Bar();
     this.inner.init(initProps, cx);
   }
   render(cx) { return this.inner.render(cx); }

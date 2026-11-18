@@ -18,6 +18,15 @@ Changes panels.
   back to any round (undoable).
 - **Stuck-loop detection**: a finding that comes back unchanged from the round before pauses
   Auto, and Feedback sends it back to the writer with a nudge.
+- **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
+  [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
+  (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.
+- **Audits after approval**: when a round is approved, a dialog asks whether the reviewer
+  should also run Cloudflare's [security audit](https://github.com/cloudflare/security-audit-skill)
+  and/or Ponytail's code audit (`ponytail-audit`) over the repository; nothing is checked by
+  default. The audit is one more round (`.coderwriter/review-<n>.md`, shield in Reviews), so
+  Feedback sends its findings to the writer. **Audit** in the bar asks again any time. A skill
+  that isn't installed is shown with its install command; coderwriter installs nothing.
 - **Launch** flags per agent: skip permissions, permission modes, sandbox, web search or any
   flags of your own; empty means each agent's default. Optionally also used by the + menu.
 - **Custom models**: any OpenAI-compatible endpoint that serves the Responses API
@@ -25,6 +34,9 @@ Changes panels.
   run through Codex via a small local relay that folds Codex's several system messages into
   one (some chat templates, such as Gemma's in llama.cpp, accept only one). A Test button
   checks the endpoint before you use it.
+- **+ menu** in the tab bar asks first: **New pair…** opens a dialog (task, writer, reviewer,
+  folder, rounds, Auto) that starts a writer/reviewer pair; **Terminal** opens a shell;
+  **Agent, space or worktree…** opens Herdr's own menu.
 - **Reviews** panel: every round's verdict and findings, rendered.
 - **Usage** panel: tokens per session and per day from the agents' local logs (custom models
   counted separately), plus each plan's limits where they apply: Claude's current session and
@@ -73,6 +85,10 @@ removes it.
   files as `before-restore`, for Undo); outside a git repo there are no snapshots.
 - The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
   rename something, in the folder you're browsing.
+- Ponytail review and audits: runs `sh` to look for each skill's `SKILL.md` in the pair folder's
+  `.claude/skills`, `.agents/skills`, `.codex/skills`, the same under your home folder, and
+  Claude Code's and Codex's plugin caches; the reviewer is told that file's path. The security
+  audit keeps its working files in `.coderwriter/security-audit/`.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the
   tab bar's + menu".
 - Custom models: **Test** sends `GET <base>/models` and one tiny `POST <base>/responses`

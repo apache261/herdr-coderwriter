@@ -43,10 +43,19 @@ and dark themes):
     **← Feedback**, **Auto**, **Stop**.
   - window buttons (−, □, ×) at the right end where the system draws none (Linux, Windows);
     on macOS it leaves room for the traffic lights when the sidebar is too narrow.
-- **Tab bar**, 40 px, under the coderwriter bar. Tabs as pills, `+` (new terminal or agent),
-  then four panel toggles: **Files**, **Changes**, **Reviews**, **Usage** (the open one gets
+- **Tab bar**, 40 px, under the coderwriter bar. Tabs as pills, `+`, then four panel toggles: **Files**, **Changes**, **Reviews**, **Usage** (the open one gets
   the `selected` background). When the sidebar is hidden, a sidebar button appears at its
-  left edge.
+  left edge. `+` opens a 270 px popup: *Pair coding* → **New pair…** (pen in `ansi4`, the
+  current `Claude → Codex` on the right), a divider, **Terminal**, and **Agent, space or
+  worktree…** (Herdr's own + menu).
+  - **New pair** dialog, 540 × 520: title and a one-line explanation; **Task** input (accent
+    border, focused; Enter starts; empty means you type into the writer); **Writer** and
+    **Reviewer** rows of agent pills (Claude Code, Codex, custom models; the chosen one has
+    a border in the role's color and a check; not installed ones dimmed); **Folder** (the
+    focused pane's folder, click to pick another); **Rounds** stepper and **Auto** switch;
+    a red warning when launch flags skip permissions. Footer: a note (or what's missing, in
+    `blocked`), **Cancel**, **Start pair** (solid). The choices are the same ones the bar's
+    chips set; the dialog hands the request to the bar, which starts the pair.
 - **Panes**, 8 px padding and gap, cards with 10 px radius, 1 px `border` (accent when
   focused), framed even when alone. Each has a 32 px header: a writer or reviewer pane gets a
   solid role chip (`WRITER` in `ansi4` / `REVIEWER` in `ansi5`), a header tinted with that
@@ -113,6 +122,22 @@ and dark themes):
   (warning). The limit only stops Auto; Review and Feedback by hand can go past it.
   **Stop** ends the running job and turns Auto off. A Herdr reload pauses running pairs and
   says so.
+- **Ponytail review** (toggle; the next pair's in the bar and New pair, the shown pair's as an
+  icon chip): the review message adds "read <path to ponytail-review/SKILL.md> and follow its
+  method, but write the file in the format below". Not installed: a warning toast with the
+  install commands, and the round runs without it.
+- **Audits**: a plain round that comes back approved opens the Audit dialog (560×440) for that
+  pair; **Audit** in the bar opens it any time. Two options, both unchecked: Security audit
+  (Cloudflare's `security-audit` skill) and Ponytail code audit (`ponytail-audit`), each showing
+  the `SKILL.md` it found or, greyed out, "Not installed" and a selectable install command.
+  **Run audit** is one round (test gate and snapshot as usual, phase `auditing`, recorded in the
+  pair's `audits`): the reviewer reads each chosen `SKILL.md`, audits the whole repository
+  starting with the changed files, keeps the security audit's files in
+  `.coderwriter/security-audit/`, and writes `review-<n>.md` with the verdict line and one
+  `## <audit>` section of numbered findings per audit. An approved audit round doesn't ask
+  again. Skills are found with one `sh` run on the pair's machine: `.claude/skills`,
+  `.agents/skills`, `.codex/skills` in the folder, then in `$HOME`, then
+  `~/.claude/plugins/cache/*/*/*/skills` and `~/.codex/plugins/cache/*/*/*/skills`; first match wins.
 - Agent statuses drive the flow and the pane badges: `working` is waited out, `blocked`
   ("needs you") waits for you to answer the agent, `idle` and `done` let the next step go.
   An agent that exits stops the job with an error toast.
@@ -248,6 +273,11 @@ and dark themes):
   can't label their sessions WRITER / REVIEWER.
 - Totals include cached input, which most plans bill at a discount.
 - The layout assumes Claude Code and Codex; other agents aren't offered as writer/reviewer.
+- Hand the reviewer a skill's `SKILL.md` path instead of its name: plugin skills are namespaced
+  (`ponytail:ponytail-review`) and enabled per project, Codex and Claude look in different
+  folders, and custom models run Codex. A path works for all of them.
+- A dialog's JS context ends when it closes and has its own copy of module state (`busy`), so
+  the Audit dialog posts `coderwriter.audit` to the bar, which runs the round.
 
 ## Done when
 
@@ -263,6 +293,10 @@ and dark themes):
   `idle`.
 - Review → creates `.coderwriter/review-1.md`, the verdict pill and the Reviews panel show
   it, and with Auto on the loop stops on approval or at the round limit with a toast.
+- With Ponytail installed, an approved round opens the Audit dialog with Ponytail code audit
+  available; without Cloudflare's skill, Security audit is greyed out with its `npx skills add`
+  command; Run audit writes the next `review-<n>.md` with a shield in Reviews, and Feedback
+  sends its findings to the writer.
 - Turning on Skip permissions makes the Launch chip red and the preview read
   `$ claude --dangerously-skip-permissions`; the next pair's writer starts with that flag;
   Reset to default goes back to `$ claude`.
