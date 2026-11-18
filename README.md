@@ -39,8 +39,7 @@ Changes panels.
 - **Any agent per role**: each role (writer, reviewer, and a team's tester and PM) can be any
   agent Herdr knows and finds installed (Claude Code, Codex, Copilot, …), a custom model, or
   **Command**: a command line of your own for that role (`claude --model sonnet`,
-  `codex -m gpt-5 -c model_reasoning_effort=high`, …). Pick them in New pair… (the bar's
-  pickers list them too). Use agents Herdr shows a status for: coderwriter waits for each turn
+  `codex -m gpt-5 -c model_reasoning_effort=high`, …). Pick them in New pair…. Use agents Herdr shows a status for: coderwriter waits for each turn
   to end by it.
 - **Ponytail review**: a toggle (bar and New pair) that has the reviewer follow
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
@@ -58,9 +57,11 @@ Changes panels.
   run through Codex via a small local relay that folds Codex's several system messages into
   one (some chat templates, such as Gemma's in llama.cpp, accept only one). A Test button
   checks the endpoint before you use it.
-- **+ menu** in the tab bar asks first: **New pair…** opens a dialog (task, writer, reviewer,
-  folder, rounds, Auto) that starts a writer/reviewer pair; **Terminal** opens a shell;
-  **Agent, space or worktree…** opens Herdr's own menu.
+- **Starting**: **New pair…** / **New team…** in the bar (in a tab without one) or the tab
+  bar's **+** menu open one dialog with every setting (task, an agent per role, folder,
+  rounds, Team, Ponytail, Auto, launch flags, custom models). The bar itself only shows the
+  shown tab's pair or team: its status and Review, Feedback, Plan, Audit, Auto, Stop. The
+  + menu also has **Terminal** and **Agent, space or worktree…** (Herdr's own menu).
 - **Reviews** panel: every round's verdict and findings, rendered.
 - **Usage** panel: tokens per session and per day from the agents' local logs (custom models
   counted separately), plus each plan's limits where they apply: Claude's current session and

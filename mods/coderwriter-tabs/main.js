@@ -112,8 +112,8 @@ export default class Tabs extends View {
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
         .children(shown.map(item)))
-      // + asks first: a writer/reviewer pair (coderwriter's dialog), a terminal, or Herdr's own menu.
-      .child(button("tab-new", "+", () => openOverlay({ mod: "coderwriter", kind: "popup", width: 270, height: 140, props: { role: "new" } })))
+      // + asks first: a pair or a team (coderwriter's dialog), a terminal, or Herdr's own menu.
+      .child(button("tab-new", "+", () => openOverlay({ mod: "coderwriter", kind: "popup", width: 280, height: 172, props: { role: "new" } })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(enabled.includes("reviews"), el => el.child(panelButton("reviews", "Reviews", "mods/coderwriter/icons/search.svg")))

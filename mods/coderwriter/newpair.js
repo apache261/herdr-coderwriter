@@ -36,7 +36,10 @@ export class NewMenu {
     const w = agentFor(pr.writer, list, "writer"), r = agentFor(pr.reviewer, list, "reviewer");
     return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
       .child(div().px(9).pt(4).pb(4).text_size(11).text_color(t.dim).child("Pair coding"))
-      .child(this.row(t, "new-pair", svg(I("pen")).size(14).text_color(t[ROLE_COLOR.writer]), "New pair…", `${shortName(w)} → ${shortName(r)}`, openNewPair))
+      .child(this.row(t, "new-pair", svg(I("pen")).size(14).text_color(t[ROLE_COLOR.writer]), "New pair…", `${shortName(w)} → ${shortName(r)}`,
+        () => { P.setPrefs({ team: false }); openNewPair(); }))
+      .child(this.row(t, "new-team", svg(I("list")).size(14).text_color(t[ROLE_COLOR.pm]), "New team…", "PM, coder, tester, reviewer",
+        () => { P.setPrefs({ team: true }); openNewPair(); }))
       .child(div().h(1).mx(4).my(4).bg(t.border))
       .child(this.row(t, "new-terminal", svg("icons/shell.svg").size(14).text_color(t.foreground), "Terminal", "",
         () => run("tab.new", { space: activeSpace()?.id })))
@@ -50,7 +53,7 @@ export class NewPair {
     const space = activeSpace();
     this.machine = space?.machine ?? null;
     this.folder = focused()?.cwd || panes().find((p) => p.focused)?.cwd || space?.folder || home();
-    this.input = InputState.new({ placeholder: "What should the writer do?" });
+    this.input = InputState.new({ placeholder: "What should be done?" });
     this.input.on("submit", (_e, cx) => this.start(cx));
     this.input.focus();
     cx.timer.after(50, () => this.input.focus());
@@ -84,6 +87,21 @@ export class NewPair {
     setShared(NEW_PAIR, { task: this.input.value(), folder: this.folder, at: Date.now() });
     run("coderwriter.newpair");
     closeOverlay(props().overlay);
+  }
+
+  // One role: its name (in a team the writer is the Coder) and its agents.
+  roleRow(t, role, team) {
+    const head = { writer: ["pen", team ? "Coder" : "Writer"], reviewer: ["search", team ? "Reviewer: quality, then security" : "Reviewer"],
+      tester: ["flask", "Tester: writes and runs the tests"], pm: ["list", "PM: you give it the task; it plans, you approve"] }[role];
+    return v_flex().gap(6)
+      .child(h_flex().gap(6).items_center().child(svg(I(head[0])).size(12).text_color(t[ROLE_COLOR[role]])).child(this.label(t, head[1])))
+      .child(this.agents(t, role));
+  }
+
+  link(t, id, icon, text, onClick) {
+    return h_flex().id(id).gap(5).items_center().text_color(t.muted).cursor_pointer()
+      .hover((s) => s.text_color(t.foreground)).on_click(() => onClick())
+      .child(svg(I(icon)).size(12)).child(text);
   }
 
   label(t, text) { return div().text_size(11.5).font_medium().text_color(t.muted).child(text); }
@@ -153,19 +171,13 @@ export class NewPair {
         .child(v_flex().gap(6)
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
-          .child(div().text_size(11).text_color(t.dim).child("Leave it empty to type the task into the writer yourself.")))
-        .child(v_flex().gap(6).child(h_flex().gap(6).items_center()
-          .child(svg(I("pen")).size(12).text_color(t[ROLE_COLOR.writer])).child(this.label(t, "Writer")))
-          .child(this.agents(t, "writer")))
-        .child(v_flex().gap(6).child(h_flex().gap(6).items_center()
-          .child(svg(I("search")).size(12).text_color(t[ROLE_COLOR.reviewer])).child(this.label(t, "Reviewer")))
-          .child(this.agents(t, "reviewer")))
-        .when(team, (el) => el.child(v_flex().gap(6).child(h_flex().gap(6).items_center()
-          .child(svg(I("flask")).size(12).text_color(t[ROLE_COLOR.tester])).child(this.label(t, "Tester")))
-          .child(this.agents(t, "tester")))
-          .child(v_flex().gap(6).child(h_flex().gap(6).items_center()
-            .child(svg(I("list")).size(12).text_color(t[ROLE_COLOR.pm])).child(this.label(t, "PM: you give it the task; it plans, you approve")))
-            .child(this.agents(t, "pm"))))
+          .child(div().text_size(11).text_color(t.dim).child(team ? "Leave it empty to tell the PM yourself, in its pane." : "Leave it empty to type the task into the writer yourself.")))
+        .children((team ? ["pm", "writer", "tester", "reviewer"] : ["writer", "reviewer"]).map((role) => this.roleRow(t, role, team)))
+        .child(h_flex().gap(14).items_center().text_size(11.8)
+          .child(this.link(t, "np-launch", "terminal", "Launch flags…",
+            () => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } })))
+          .child(this.link(t, "np-models", "cpu", "Custom models…",
+            () => openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }))))
         .child(v_flex().gap(6)
           .child(this.label(t, "Folder"))
           .child(h_flex().id("folder").h(30).px(10).gap(7).items_center().rounded(7).border_1().border_color(t.border).bg(t.background)
@@ -211,11 +223,11 @@ export class NewPair {
               .child(div().size(11).rounded(6).bg(auto ? t.accent_foreground : t.background)))))
         .when(danger, (el) => el.child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.blocked)
           .child(svg(I("alert")).size(13))
-          .child("Launch flags or a command skip permission prompts (Launch chip in the bar, or the command above).")))))
+          .child("Launch flags or a command skip permission prompts (Launch flags… above, or the command).")))))
       .child(h_flex().flex_none().gap(8).px(18).py(12).items_center().border_t(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(problem ? t.blocked : t.dim)
           .child(problem ?? (this.failed ? "Could not check installed agents" : "Esc closes")))
         .child(this.button(t, "cancel", "Cancel", () => closeOverlay(props().overlay)))
-        .child(this.button(t, "start", "Start pair", (cx) => this.start(cx), { primary: true, enabled: !problem, icon: "play" })));
+        .child(this.button(t, "start", team ? "Start team" : "Start pair", (cx) => this.start(cx), { primary: true, enabled: !problem, icon: "play" })));
   }
 }

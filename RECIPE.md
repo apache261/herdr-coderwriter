@@ -21,41 +21,33 @@ and dark themes):
   sharing the height equally (90 px minimum each), then the `workspace-chrome` footer
   (69 px: Settings, Add machine). Folding it narrows it to a 44 px rail.
 - **coderwriter bar**, 46 px, the window's top row: drags the window (double-click maximizes),
-  `chrome` background, bottom border. Left to right:
-  - pen icon (`ansi4`) and **coderwriter** in semibold 12.8 px;
-  - **Writer** chip (pen, `ansi4`) and **Reviewer** chip (magnifier, `ansi5`), each with
-    the agent's icon and name and a chevron; a click opens a 250 px popup listing Claude
-    Code, Codex and your custom models (a chip icon in `accent`; not installed ones dimmed,
-    custom models say "needs Codex" without it; a check on the chosen one), then a divider and
-    **Custom models…**;
-  - **Launch** chip: `default`, or which agents have extra flags (`Claude flags`); red
-    border, red tint and a warning icon while a permission-skipping flag is on;
-  - folder chip: the folder new pairs start in (follows the focused pane until picked,
-    then shows an `x` to go back to following);
-  - task input (fills the remaining width, accent border while focused);
-  - rounds stepper `– 3 rounds +` (1 to 10) and an **Auto** switch;
-  - **Start** (solid, play icon);
-  - usage chip: gauge icon, today's tokens (`29M today`), `Claude 35% used` (the current
-    session; red at 80 %) and `Codex 64% left` (red at 20 % or less).
-  - In a pair's tab the stepper and switch move into a pair group after a separator:
-    spinner while a job runs, the pair's note ("Round 2: reviewing"), a verdict pill
-    (Approved / Changes requested / No review file / No verdict), `round/max`, **Review →**,
-    **← Feedback**, **Auto**, **Stop**.
+  `chrome` background, bottom border. It follows the shown tab. Left to right:
+  - pen icon (`ansi4`) and **coderwriter** in semibold 12.8 px, then a divider;
+  - in a tab with no pair or team: "No pair or team in this tab" (dim), then **New pair…** and
+    **New team…** (solid), which open the dialog in that mode;
+  - in a pair's or team's tab, the full width: spinner while a job runs, the note ("Round 2:
+    reviewing"); a team's stage strip, or a pair's verdict pill (Approved / Changes requested /
+    No review file / No verdict); **Tests**; a pair's **Ponytail** chip; `round/max` stepper;
+    **Review →**, **← Feedback**, a team's **Plan**, **Audit**, **Auto**, **Stop**;
   - window buttons (−, □, ×) at the right end where the system draws none (Linux, Windows);
     on macOS it leaves room for the traffic lights when the sidebar is too narrow.
+  The bar has no setup of its own: agents, folder, task, rounds, flags and models are all in
+  the New pair / New team dialog.
 - **Tab bar**, 40 px, under the coderwriter bar. Tabs as pills, `+`, then four panel toggles: **Files**, **Changes**, **Reviews**, **Usage** (the open one gets
   the `selected` background). When the sidebar is hidden, a sidebar button appears at its
-  left edge. `+` opens a 270 px popup: *Pair coding* → **New pair…** (pen in `ansi4`, the
-  current `Claude → Codex` on the right), a divider, **Terminal**, and **Agent, space or
-  worktree…** (Herdr's own + menu).
-  - **New pair** dialog, 540 × 520: title and a one-line explanation; **Task** input (accent
-    border, focused; Enter starts; empty means you type into the writer); **Writer** and
-    **Reviewer** rows of agent pills (Claude Code, Codex, custom models; the chosen one has
-    a border in the role's color and a check; not installed ones dimmed); **Folder** (the
-    focused pane's folder, click to pick another); **Rounds** stepper and **Auto** switch;
-    a red warning when launch flags skip permissions. Footer: a note (or what's missing, in
-    `blocked`), **Cancel**, **Start pair** (solid). The choices are the same ones the bar's
-    chips set; the dialog hands the request to the bar, which starts the pair.
+  left edge. `+` opens a 280 px popup: *Pair coding* → **New pair…** (pen in `ansi4`, the
+  current `Claude → Codex` on the right), **New team…** (list icon in `ansi6`), a divider,
+  **Terminal**, and **Agent, space or worktree…** (Herdr's own + menu).
+  - **New pair / New team** dialog, 560 × 700, its body scrolls: title and a one-line
+    explanation; **Task** input (accent border, focused; Enter starts; empty means you type
+    into the writer, or tell the PM); a row of agent pills per role (a pair: Writer, Reviewer;
+    a team: PM, Coder, Tester, Reviewer), each the installed agents Herdr knows, custom models
+    and **Command** (the chosen one has a border in the role's color and a check);
+    **Launch flags…** and **Custom models…** links; **Folder** (the focused pane's folder,
+    click to pick another); **Rounds** stepper, **Team**, **Ponytail review** and **Auto**;
+    a red warning when launch flags or a command skip permissions. Footer: a note (or what's
+    missing, in `blocked`), **Cancel**, **Start pair** / **Start team** (solid). The dialog
+    hands the request to the bar, which starts it.
 - **Panes**, 8 px padding and gap, cards with 10 px radius, 1 px `border` (accent when
   focused), framed even when alone. Each has a 32 px header: a writer or reviewer pane gets a
   solid role chip (`WRITER` in `ansi4` / `REVIEWER` in `ansi5`), a header tinted with that
@@ -107,7 +99,7 @@ and dark themes):
 
 ## How it behaves
 
-- **Start** (or Enter in the task input) starts a pair: a new tab in the shown space with the
+- **Start pair** in the dialog (or Enter in its task input) starts a pair: a new tab in the shown space with the
   writer on the left and the reviewer on the right, both in the chosen folder. With a task,
   the writer gets it at once (with a note that it is the WRITER and should leave changes
   uncommitted); without one, you type into the writer yourself. `.coderwriter/` is added to
@@ -217,17 +209,16 @@ and dark themes):
   its new name.
 - Panel toggles open the panel on that view, or close it if it is already showing; the
   choice is remembered per space.
-- Keys (optional, add to `keys.json`): `coderwriter.start`, `coderwriter.task` (focus the
-  task input), `coderwriter.review`, `coderwriter.feedback`, `coderwriter.auto`,
-  `coderwriter.stop`, `coderwriter.new` (the New pair dialog), `coderwriter.team` (Team mode on
+- Keys (optional, add to `keys.json`): `coderwriter.new` (the New pair dialog; `start` and
+  `task` do the same), `coderwriter.review`, `coderwriter.feedback`, `coderwriter.auto`,
+  `coderwriter.stop`, `coderwriter.team` (Team mode on
   or off for the next pair), `coderwriter.show-plan` and `coderwriter.show-audit` (a team's
   Plan and Audit dialogs).
 - **Agents per role**: `knownAgents()` (Herdr's programs with a `run`, Claude and Codex first)
   plus custom models (`m:<id>`) plus `cmd`: the role's own command line in
   `prefs.commands[role]`, split shell-style and run as the argv (no launch flags added). The
   New pair dialog lists the installed ones per role (and the chosen one), with Command's text
-  box under the row when chosen; the bar's pickers list installed agents, Claude and Codex,
-  custom models, and Command when that role has one. A command with
+  box under the row when chosen. A command with
   `--dangerously…`/`--yolo`/`bypass`/`skip-permissions`/`--approve-for-me` shows the red warning.
 
 ## Built from
@@ -338,7 +329,7 @@ and dark themes):
   button brings it back.
 - Files, Changes, Reviews and Usage each open the side panel on that view and close it on a
   second click.
-- Start with a task opens a tab with a `WRITER` pane on the left and a `REVIEWER` pane on the
+- The bar in a tab without a pair shows only New pair… and New team…; Start pair with a task opens a tab with a `WRITER` pane on the left and a `REVIEWER` pane on the
   right, the writer receives the task, and its header badge goes `starting` → `working` →
   `idle`.
 - Review → creates `.coderwriter/review-1.md`, the verdict pill and the Reviews panel show
@@ -347,12 +338,12 @@ and dark themes):
   available; without Cloudflare's skill, Security audit is greyed out with its `npx skills add`
   command; Run audit writes the next `review-<n>.md` with a shield in Reviews, and Feedback
   sends its findings to the writer.
-- Turning on Skip permissions makes the Launch chip red and the preview read
+- Turning on Skip permissions (Launch flags… in the dialog) makes the dialog's warning show and the preview read
   `$ claude --dangerously-skip-permissions`; the next pair's writer starts with that flag;
   Reset to default goes back to `$ claude`.
 - In Files, New folder `x/y` creates both, Rename onto an existing name shows "already
   exists" and changes nothing, and Esc leaves the tree as it was.
-- A custom model on a Responses-capable endpoint passes Test, shows in both pickers, and a pair
+- A custom model on a Responses-capable endpoint passes Test, shows in every role's row, and a pair
   started with it runs Codex against that base URL with the key in its environment (not in
   `hc ls`); a Chat-Completions-only endpoint fails Test with the proxy hint.
 - The Usage panel lists the pair's sessions and today's totals, and its Codex limits match

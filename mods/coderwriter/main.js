@@ -1,77 +1,27 @@
-// coderwriter: a writer agent and a reviewer agent side by side.
+// coderwriter: a writer agent and a reviewer agent side by side, or a team.
 // props.role: "bar" (default; the strip above the panes), "reviews" (the side
 // panel of review rounds), "usage" (the token usage panel), "launch" (the
-// launch-flags popup), "pick" (the agent dropdown popup, props.which = "writer" |
-// "reviewer"), "new" (the tab bar's + menu), "newpair" (the New pair dialog) or
+// launch-flags popup), "models" (custom models), "tests" (the test command popup),
+// "new" (the tab bar's + menu), "newpair" (the New pair / New team dialog),
 // "audit" (the Audit dialog, props.tab) or "plan" (the PM's Plan dialog, props.tab).
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { theme, spaces, panes, focused, openOverlay, closeOverlay, props, pickFolder, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
+import { h_flex } from "gpui-base";
+import { theme, spaces, panes, focused, openOverlay, props, notify, home, shared, setShared, nextCommand, run, window, layout, settings } from "herdr";
 import * as P from "./pair.js";
 import { Reviews } from "./reviews.js";
-import { Launch, isDangerous, customized } from "./launch.js";
+import { Launch } from "./launch.js";
 import { Usage } from "./usage.js";
 import { Models } from "./models.js";
 import { Tests } from "./tests.js";
-import { I, ROLE_COLOR, tilde, agentIcon, known, refreshKnown, agentFor, allAgents } from "./agents.js";
+import { I, ROLE_COLOR, known, refreshKnown, agentFor } from "./agents.js";
 import { NewMenu, NewPair, NEW_PAIR, openNewPair } from "./newpair.js";
 import { Audit, AUDIT_REQ } from "./audits.js";
 import { Plan, PLAN_REQ } from "./plan.js";
 
 export { ROLE_COLOR };
 
-// A role's choices in the bar's picker: installed agents (Claude and Codex always), custom
-// models, and the role's command when one is set (it is typed in the New pair dialog).
-const pickerRows = (which, machine) => {
-  const chosen = P.prefs()[which];
-  return allAgents(known(machine), which).filter((a) => a.key === chosen || (a.cmd ? a.installed : a.installed !== false || P.AGENTS.includes(a.key) || a.custom));
-};
-const pickerHeight = (which, machine) => 40 + 31 * pickerRows(which, machine).length + 44;
-
-class Picker {
-  init(_props, cx) {
-    const machine = spaces().find((s) => s.active)?.machine ?? null;
-    this.machine = machine;
-    cx.spawn(async (cx) => { try { await refreshKnown(machine); } catch { this.failed = true; } cx.notify(); });
-  }
-  render() {
-    const t = theme();
-    const which = props().which;
-    const chosen = P.prefs()[which];
-    const rows = pickerRows(which, this.machine);
-    return v_flex().size_full().bg(t.popover).p(5).gap(1).text_size(12.8)
-      .child(div().px(9).pt(4).pb(5).text_size(11).text_color(t.dim).child(which === "writer" ? "Writer agent" : "Reviewer agent"))
-      .children(rows.map((a) => {
-        const ok = a.installed !== false;
-        return h_flex().id(`pick-${a.key}`).h(31).px(9).gap(10).rounded(7).items_center()
-          .text_color(ok ? t.foreground : t.dim)
-          .when(ok, (el) => el.hover((s) => s.bg(t.selected)))
-          .on_click(() => { if (!ok) return; P.setPrefs({ [which]: a.key }); closeOverlay(props().overlay); })
-          .child(agentIcon(a, 14, t.foreground))
-          .child(div().flex_1().truncate().child(a.cmd ? `Command: ${a.command}` : a.name))
-          .child(a.installed === false ? div().text_size(11).text_color(t.dim).child(a.custom ? "needs Codex" : "not installed")
-            : chosen === a.key ? svg(I("check")).size(14).text_color(t.accent) : div());
-      }))
-      .child(div().h(1).mx(6).my(3).bg(t.border))
-      .child(h_flex().id("pick-manage").h(31).px(9).gap(10).rounded(7).items_center().text_color(t.muted)
-        .hover((s) => s.bg(t.selected).text_color(t.foreground))
-        .on_click(() => { closeOverlay(props().overlay); openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }); })
-        .child(svg(I("plus")).size(14))
-        .child(div().flex_1().child("Custom models…")))
-      .when(Boolean(this.failed), (el) => el.child(div().px(9).py(4).text_size(11).text_color(t.dim).child("Could not check installed agents")));
-  }
-}
-
 class Bar {
   init(_props, cx) {
-    this.task = "";
-    this.input = InputState.new({ placeholder: "Task for the writer… (Enter starts a pair)" });
-    this.input.on("change", (_e, cx) => { this.task = this.input.value(); cx.notify(); });
-    this.input.on("submit", (_e, cx) => this.start(cx));
-    this.inputFocused = false;
-    this.input.on("focus", (_e, cx) => { this.inputFocused = true; cx.notify(); });
-    this.input.on("blur", (_e, cx) => { this.inputFocused = false; cx.notify(); });
-    this.folder = null; // null: follow the focused pane's folder
     this.starting = false;
     P.resumeNote();
     const machine = spaces().find((s) => s.active)?.machine ?? null;
@@ -82,15 +32,13 @@ class Bar {
       for (;;) {
         const c = await nextCommand();
         const p = this.current();
-        if (c === "start") this.start(cx);
+        if (c === "start" || c === "task" || c === "new") openNewPair(); // the dialog holds every setting
         else if (c === "newpair") { const req = shared(NEW_PAIR); setShared(NEW_PAIR, null); if (req) this.start(cx, req); }
         else if (c === "plan") {
           const req = shared(PLAN_REQ); setShared(PLAN_REQ, null);
           if (req?.action === "approve") P.approvePlan(req.tab); else if (req?.action === "revise") P.revisePlan(req.tab, req.text);
         }
         else if (c === "audit") { const req = shared(AUDIT_REQ); setShared(AUDIT_REQ, null); if (req) P.audit(req.tab, req.kinds); }
-        else if (c === "task") this.input.focus();
-        else if (c === "new") openNewPair();
         else if (c === "team") { P.setPrefs({ team: !P.prefs().team }); notify({ title: "coderwriter", body: `Team mode ${P.prefs().team ? "on" : "off"} for the next pair`, level: "info" }); }
         else if (c === "show-plan" && p) P.askPlan(p.tab);
         else if (c === "show-audit" && p) P.askAudit(p.tab);
@@ -115,11 +63,12 @@ class Bar {
     return tab ? P.pair(tab) : null;
   }
 
-  // req: { task, folder } from the New pair dialog; otherwise the bar's own task and folder.
-  start(cx, req = null) {
+  // req: { task, folder } from the New pair dialog (which only leaves the request: it
+  // closes, and a pair's jobs outlive it).
+  start(cx, req) {
     if (this.starting) return;
     const pr = P.prefs();
-    const folder = req?.folder || (this.folder ?? this.autoFolder());
+    const folder = req.folder || this.autoFolder();
     this.starting = true;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -136,8 +85,7 @@ class Bar {
           if (!a || !a.installed) throw new Error(a?.custom ? `The ${role} model ${a.name} runs through Codex, which is not installed on ${space.machine ?? "this computer"}`
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
-        const task = (req ? req.task ?? "" : this.task).trim();
-        if (!req) { this.input.set_value(""); this.task = ""; }
+        const task = (req.task ?? "").trim();
         this.starting = false;
         cx.notify();
         await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, max: pr.max, auto: pr.auto && Boolean(task), lens: Boolean(pr.lens), team: Boolean(pr.team) });
@@ -158,45 +106,6 @@ class Bar {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((e, cx) => { if (enabled) onClick(e, cx); })
       .children(children);
-  }
-
-  // compact: icons only (a pair tab is open and its own controls need the room).
-  agentChip(t, which, compact = false) {
-    const key = P.prefs()[which];
-    const machine = this.space()?.machine ?? null;
-    const a = agentFor(key, known(machine), which);
-    const color = t[ROLE_COLOR[which]];
-    const role = which === "writer" ? "Writer" : "Reviewer";
-    return this.chip(t, `chip-${which}`, [
-      svg(I(which === "writer" ? "pen" : "search")).size(13).text_color(color),
-      ...(compact ? [] : [div().text_color(t.muted).child(role)]),
-      agentIcon(a, 14, t.foreground),
-      ...(compact ? [] : [div().font_medium().max_w(120).truncate().child(a.name.replace(" Code", ""))]),
-      svg(I("chevron-down")).size(12).text_color(t.dim),
-    ], () => openOverlay({ mod: "coderwriter", kind: "popup", width: 270, height: pickerHeight(which, machine), props: { role: "pick", which } }),
-    { tip: compact ? `${role} for the next pair: ${a.name}` : undefined });
-  }
-
-  // Extra launch flags for the pair's agents: "default" when none, red when one skips permissions.
-  launchChip(t, compact = false) {
-    const pr = P.prefs();
-    // Custom models run Codex, so Codex's flags are theirs.
-    const keys = [...new Set([pr.writer, pr.reviewer].map((k) => (P.isCustom(k) ? "codex" : k)))];
-    const danger = keys.some(isDangerous);
-    const custom = keys.filter(customized);
-    const label = !custom.length ? "default" : custom.map((k) => (k === "claude" ? "Claude" : "Codex")).join(" + ") + " flags";
-    return h_flex().id("launch").h(28).px(9).gap(6).items_center().flex_none().rounded(7)
-      .border_1().border_color(danger ? t.blocked : custom.length ? t.accent : t.border)
-      .bg(danger ? t.blocked + "14" : t.background).text_size(12.3).text_color(t.foreground)
-      .hover((s) => s.bg(t.hover)).cursor_pointer()
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click(() => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } }))
-      .when(compact, (el) => el.tooltip(`Launch flags: ${label}`))
-      .child(svg(I(danger ? "alert" : "terminal")).size(13).text_color(danger ? t.blocked : t.dim))
-      .when(!compact, (el) => el
-        .child(div().text_color(t.muted).child("Launch"))
-        .child(div().max_w(160).truncate().text_color(danger ? t.blocked : custom.length ? t.foreground : t.dim).child(label)))
-      .child(svg(I("chevron-down")).size(12).text_color(t.dim));
   }
 
   iconButton(t, id, icon, onClick, enabled = true) {
@@ -312,47 +221,29 @@ class Bar {
     const t = theme();
     const p = this.current();
     const busy = p ? P.isBusy(p.tab) : false;
-    const folder = this.folder ?? this.autoFolder();
     const sep = () => div().w(1).h(22).flex_none().bg(t.border);
 
-    // With a pair tab open, the setup controls (which only shape the next pair) shrink to
-    // icons so the pair's own controls fit; overflow_hidden keeps whatever still doesn't
-    // fit from painting over them.
-    const compact = Boolean(p);
-    const setup = h_flex().flex_1().min_w(0).overflow_hidden().gap(6).items_center()
-      .child(this.agentChip(t, "writer", compact))
-      .child(this.agentChip(t, "reviewer", compact))
-      .child(this.launchChip(t, compact))
-      .child(this.chip(t, "folder", [
-        svg(I("folder")).size(13).text_color(this.folder ? t.accent : t.dim),
-        ...(compact ? [] : [div().max_w(170).truncate().text_color(t.muted).child(tilde(folder))]),
-        ...(this.folder && !compact ? [div().id("folder-reset").text_color(t.dim).hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.folder = null; cx.notify(); })
-          .child(svg(I("x")).size(11))] : []),
-      ], (_e, cx) => cx.spawn(async (cx) => {
-        const chosen = await pickFolder({ prompt: "Use for the pair" });
-        if (chosen) { this.folder = chosen; cx.notify(); }
-      }), { title: "Folder", tip: compact ? tilde(folder) : undefined }))
-      .child(Input.new(this.input).flex_1().min_w(compact ? 80 : 120).h(28).px(9).rounded(7).border_1()
-        .border_color(this.inputFocused ? t.accent : t.border).bg(t.background).text_size(12.5).text_color(t.foreground))
-      .when(!p, (el) => el.child(this.rounds(t, null)).child(this.lensChip(t, null)).child(this.autoToggle(t, null)))
-      .child(this.button(t, "start", "play", this.starting ? "Starting…" : "Start", (cx) => this.start(cx), { primary: true, enabled: !this.starting }));
-
-    const pairGroup = !p ? null : h_flex().flex_none().gap(6).items_center()
-      .child(sep())
-      .child(h_flex().flex_none().gap(6).items_center().max_w(200)
+    // A pair or team tab: its own controls, the full width. Any other tab: the buttons that
+    // start one (the dialog holds every setting: agents, folder, task, rounds, flags).
+    const body = p ? h_flex().flex_1().min_w(0).gap(6).items_center()
+      .child(h_flex().flex_1().min_w(0).gap(6).items_center()
         .when(busy, (el) => el.child(svg(I("spinner")).size(12).flex_none().text_color(t.working).spin(900)))
-        .child(div().truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
+        .child(div().min_w(0).truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(p.kind === "team" ? this.teamStrip(t, p) : this.verdictPill(t, p) ?? div())
       .child(this.testsChip(t, p))
-      .when(p?.kind !== "team", (el) => el.child(this.lensChip(t, p))) // a team's quality check always uses Ponytail
+      .when(p.kind !== "team", (el) => el.child(this.lensChip(t, p))) // a team's quality check always uses Ponytail
       .child(this.rounds(t, p))
       .child(this.button(t, "to-review", "arrow-right", "Review", () => P.review(p.tab), { enabled: !busy }))
       .child(this.button(t, "to-writer", "arrow-left", "Feedback", () => P.feedback(p.tab), { enabled: !busy && ((p.round ?? 0) > 0 || p.phase === "tests_failed") }))
       .when(Boolean(p.roles?.pm), (el) => el.child(this.button(t, "plan", "list", "Plan", () => P.askPlan(p.tab))))
       .child(this.button(t, "audit", "shield", "Audit", () => P.askAudit(p.tab), { enabled: !busy }))
       .child(this.autoToggle(t, p))
-      .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }));
+      .child(this.button(t, "stop", "stop", "Stop", () => P.stop(p.tab), { enabled: busy || Boolean(p.auto) }))
+      : h_flex().flex_1().min_w(0).gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(11.8).text_color(t.dim)
+          .child(this.starting ? "Starting…" : "No pair or team in this tab"))
+        .child(this.button(t, "new-pair", "plus", "New pair…", () => { P.setPrefs({ team: false }); openNewPair(); }, { enabled: !this.starting }))
+        .child(this.button(t, "new-team", "plus", "New team…", () => { P.setPrefs({ team: true }); openNewPair(); }, { primary: true, enabled: !this.starting }));
 
     // As the window's top row (props.controls): the window buttons where the system draws
     // none, and room for macOS's traffic lights when the sidebar is too narrow to hold them.
@@ -375,8 +266,7 @@ class Bar {
         .child(svg(I("pen")).size(14).text_color(t[ROLE_COLOR.writer]))
         .child(div().text_size(12.8).font_semibold().text_color(t.foreground).child("coderwriter")))
       .child(sep())
-      .child(setup)
-      .when(Boolean(pairGroup), (el) => el.child(pairGroup))
+      .child(body)
       .when(Boolean(windowButtons), (el) => el.child(windowButtons));
   }
 }
@@ -384,7 +274,7 @@ class Bar {
 export default class CoderWriter extends View {
   init(initProps, cx) {
     const role = props()?.role;
-    this.inner = role === "pick" ? new Picker() : role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
+    this.inner = role === "reviews" ? new Reviews() : role === "usage" ? new Usage()
       : role === "launch" ? new Launch() : role === "models" ? new Models() : role === "tests" ? new Tests()
       : role === "new" ? new NewMenu() : role === "newpair" ? new NewPair() : role === "audit" ? new Audit() : role === "plan" ? new Plan() : new Bar();
     this.inner.init(initProps, cx);
