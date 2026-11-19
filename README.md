@@ -56,6 +56,10 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   documentation only: anything else it changes is named in a warning before you commit.
 - **Test files are the tester's**: files are snapshotted after the tester runs, and a coder
   that edits a test gets it back as a finding (the tester is told to check it).
+- **A fresh conversation per subtask**: before each subtask after the first, the coder,
+  tester and reviewer start a new conversation (Claude Code `/clear`, Codex `/new`; a role's
+  own command line keeps its own). Their briefs and `.coderwriter/` carry what they need, so a
+  long plan doesn't run on a context compacted again and again.
 - **On screen**: the team's tab is a 2×2 grid in the order the work flows (PM over Coder,
   Tester over Reviewer); the bar shows the flow as a strip (`2/3 PM › Coder › Tester › Tests ›
   Quality › Security`: working, passed, failed or waiting on you); the Reviews panel shows
@@ -78,6 +82,11 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
 - **Turn limit** (default 30 min, or none): when one agent works longer than that on one turn,
   the run pauses with a toast (time it waits for you doesn't count); the agent goes on in its
   pane, and Review or Feedback carry on.
+- **Hand-offs that don't get dropped**: a turn counts as over only when the agent stays quiet
+  for 3 s; every brief tells the agent to finish in its turn (wait for its own sub-agents and
+  background commands, don't stop to ask whether to go on); and an agent whose turn ends
+  without its file (a review or check with no `VERDICT` line, the PM's report, the docs
+  writer's notes) is reminded once before the round counts it as missing.
 - **The bar follows the shown tab**: in a pair's or team's tab it shows only that one's
   status and **Review**, **Feedback**, **Plan**, **Audit**, **Auto**, **Stop**.
 - **Any agent per role, with its own model and effort**: any agent Herdr knows and finds

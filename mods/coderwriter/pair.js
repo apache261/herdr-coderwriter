@@ -181,7 +181,7 @@ async function ready(tab, g, address, role) {
     if (gen[tab] !== g) throw new Cancelled();
     const s = status(address);
     if (s.state === "gone" || s.state === "finished") throw new Error(`The ${role} (${address}) exited`);
-    if (s.status === "idle" || s.status === "done") return;
+    if (s.status === "idle" || s.status === "done" || s.status === "error") return;
     if (!told && (s.status === null || s.status === "blocked")) {
       told = true;
       update(tab, { note: `Waiting for the ${role} — answer its prompt if it shows one` });
@@ -191,12 +191,15 @@ async function ready(tab, g, address, role) {
 }
 
 // Wait until the agent stops working. Blocked means it needs the person: keep
-// waiting (politely) until they answer.
+// waiting (politely) until they answer. The turn counts as over only when the agent stays
+// quiet for QUIET ms, so a moment between two steps isn't taken for the end of its turn.
 // The pair's time limit for one turn (p.turnLimit minutes, 0: none) counts working time
 // only: while the agent waits for you ("blocked") the clock starts again. Over the limit,
 // the job stops with a note; the agent itself goes on in its pane.
+const QUIET = 3000;
 async function settle(tab, g, address, role, since = Date.now()) {
   const limit = (pair(tab)?.turnLimit ?? 0) * 60000;
+  let quiet = false;
   for (;;) {
     if (gen[tab] !== g) throw new Cancelled();
     const s = status(address);
@@ -205,9 +208,16 @@ async function settle(tab, g, address, role, since = Date.now()) {
       update(tab, { note: `The ${role} needs you` });
       await sleep(2000);
       since = Date.now();
+      quiet = false;
       continue;
     }
-    if (s.status !== "working") return;
+    if (s.status !== "working") {
+      if (quiet) return;
+      quiet = true;
+      await sleep(QUIET);
+      continue;
+    }
+    quiet = false;
     const left = limit ? limit - (Date.now() - since) : Infinity;
     if (left <= 0) {
       notify({ title: `coderwriter: the ${role} is taking long`, body: `Over ${limit / 60000} min on one turn: paused. Its pane shows what it's doing.`,
@@ -231,6 +241,43 @@ async function say(tab, g, address, role, text) {
   if (r.wait?.reason === "exit") throw new Error(`The ${role} (${address}) exited`);
   if (gen[tab] !== g) throw new Cancelled();
   await settle(tab, g, address, role, since);
+}
+
+// Every brief that hands work on ends with this: in a long session an agent may end its
+// turn while its sub-agents or background commands still run, or stop to ask whether to go
+// on, and coderwriter would read a file that isn't written yet.
+const FINISH = " Finish the whole job in this turn: if you start sub-agents or background commands, wait for them" +
+  " before you end it, and don't stop to ask whether to go on.";
+
+// The agent's turn ended but its file is missing (or, with `verdict`, has no VERDICT line):
+// remind it once, then read again. read() gives the result, bad(result) says it's missing.
+async function remind(tab, g, address, role, file, read, bad, verdict = null) {
+  const first = await read();
+  if (!bad(first)) return first;
+  if (gen[tab] !== g) throw new Cancelled();
+  update(tab, { note: `The ${role} ended its turn without ${file}: reminding it once` });
+  await say(tab, g, address, role, `Your turn ended, but ${file} is ${verdict ? "missing or has no VERDICT line" : "missing"}. ` +
+    `If sub-agents or background commands of yours are still running, wait for them. Then write ${file} as asked` +
+    (verdict ? `: the first line exactly "VERDICT: ${verdict[0]}" or "VERDICT: ${verdict[1]}", then the numbered findings` : "") +
+    `. Then stop.`);
+  return read();
+}
+async function exists(p, rel) {
+  try { return (await readTextFile(join(p.folder, rel), where(p))) != null; } catch { return false; }
+}
+
+// A new conversation for an agent: Claude Code's /clear, Codex's /new (custom models run
+// Codex); a role's own command line keeps its own. Its brief and the files in
+// .coderwriter/ carry what it needs, so each subtask of a long plan starts from a clean
+// context rather than one compacted again and again. Not clearing is never fatal.
+const CLEAR = { claude: "/clear", codex: "/new" };
+async function fresh(tab, g, who, role) {
+  const cmd = CLEAR[who?.agent] ?? (isCustom(who?.agent) ? CLEAR.codex : null);
+  if (!cmd || !who.t) return;
+  await ready(tab, g, who.t, role);
+  const r = await hcJson(["send", "--wait", "--json", "--timeout", "30", who.t, cmd], 60000).catch(() => null);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!r || r.started === false) update(tab, { note: `Could not clear the ${role}'s conversation: it keeps it` });
 }
 
 // ---- review skills ----------------------------------------------------------------
@@ -269,16 +316,16 @@ export function writerBrief(task, team = false) {
   if (team) return `${task}\n\n(You are the CODER in a team. Make the change in this folder and leave it uncommitted. ` +
     `When you finish, and after every fix, write what you changed and why, and how you checked it, to ${CODER_NOTES}. ` +
     `A tester writes and runs the tests: don't edit test files; if you think a test is wrong, say why in ${CODER_NOTES}. ` +
-    `Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.)`;
+    `Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
   return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted. ` +
-    `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.)`;
+    `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
 }
 // out: where the review goes and its verdict words (a team stage writes PASS / FAIL).
 export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/review-${round}.md`, ok: "APPROVED", no: "CHANGES_REQUESTED" }) {
   const file = out.file;
   const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], prev = cp[round - 1];
   const snaps = !now ? "" : round > 1 && prev
-    ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check your round ${round - 1} findings were addressed.` +
+    ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check the findings of ${REVIEW_DIR}/review-${round - 1}.md were addressed.` +
       (base ? ` The whole change is \`git diff ${base} ${now}\`.` : "")
     : base ? ` The whole change is \`git diff ${base} ${now}\` (snapshots that include untracked files).` : "";
   const t = p.tests;
@@ -291,7 +338,7 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
     ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: ${out.ok}" or "VERDICT: ${out.no}",` +
-    ` then numbered findings, most important first, each with the file and what to change. Then stop.`;
+    ` then numbered findings, most important first, each with the file and what to change.` + FINISH + ` Then stop.`;
 }
 // An audit round: the selected audit skills over the whole repository, one review file.
 export function auditBrief(p, round, kinds, found) {
@@ -307,7 +354,7 @@ export function auditBrief(p, round, kinds, found) {
     ` Cover the whole repository, starting with the files the change touches (git status, git diff; ignore ${REVIEW_DIR}/).` + steps +
     ` Do not edit project files. Write the result to ${file}: the first line exactly "VERDICT: APPROVED" (nothing that must be fixed)` +
     ` or "VERDICT: CHANGES_REQUESTED", then a ${heads} section, each with numbered findings, most important first,` +
-    ` each with the file and what to change. Then stop.`;
+    ` each with the file and what to change.` + FINISH + ` Then stop.`;
 }
 export function feedbackBrief(p) {
   const round = p.round;
@@ -321,10 +368,10 @@ export function feedbackBrief(p) {
       `Everything to fix is in ${REVIEW_DIR}/review-${round}.md (each check's full report is in ${REVIEW_DIR}/round-${round}/). ` +
       `Address every finding (push back in your reply if you disagree with one).${again} ` +
       `Fix the code, not the tests: test files are the tester's; if a test is wrong, say why in ${CODER_NOTES}. ` +
-      `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.`;
+      `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.${FINISH}`;
   }
   return restoredNote(p) + `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
-    `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.`;
+    `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.${FINISH}`;
 }
 
 function where(p) { return p.machine ? { on: p.machine } : {}; }
@@ -433,7 +480,7 @@ export function testerBrief(p, round, file) {
     ` Edit only test files, fixtures and test config; never change the code under test: when the code is wrong, that is a finding.` +
     ` Write your report to ${file}: the first line exactly "VERDICT: PASS" (every test passes and the change is covered) or "VERDICT: FAIL",` +
     ` then "Tests written:" and "Ran:" as bullet lists (commands and results), then numbered findings, most important first:` +
-    ` for each failing test what it expects, what happens, and the file and line of the code at fault. Then stop.`;
+    ` for each failing test what it expects, what happens, and the file and line of the code at fault.` + FINISH + ` Then stop.`;
 }
 
 async function agentStage(tab, g, round, id, found) {
@@ -443,7 +490,8 @@ async function agentStage(tab, g, round, id, found) {
   await sh(p, 'mkdir -p "$(dirname "$1")" && rm -f "$1"', [file]);
   const brief = s.brief(p, round, file, found);
   await say(tab, g, who.t, s.role, brief);
-  return readStage(pair(tab), file);
+  return remind(tab, g, who.t, s.role, file, () => readStage(pair(tab), file),
+    (r) => r.state === "missing" || r.state === "unknown", ["PASS", "FAIL"]);
 }
 
 function combine(round, results) {
@@ -536,7 +584,7 @@ function reportBrief(p) {
     (roleOf(p, "docs") ? `The docs writer updated the documentation (see ${DOCS}). ` : "") +
     `Write a short report for the user to ${REPORT}: for each subtask what was done (see ${CODER_NOTES}, the reports in ` +
     `${REVIEW_DIR}/round-*/ and git diff), the tests added, anything still open or worth a second look, and what to check before ` +
-    `committing. Change no file except ${REPORT}. Then stop.`;
+    `committing. Change no file except ${REPORT}.${FINISH} Then stop.`;
 }
 // The plan's subtasks: [{ title, body }] from its "## <n>. <title>" headings.
 export function planTasks(text) {
@@ -576,7 +624,7 @@ async function waitPlan(tab, g, before) {
       askPlan(tab);
       return;
     }
-    if (!told && (s.status === "idle" || s.status === "done" || s.status === "blocked")) {
+    if (!told && ["idle", "done", "blocked", "error"].includes(s.status)) {
       told = true;
       update(tab, { note: "The PM has a question: answer it in the PM pane" });
       notify({ title: "coderwriter: the PM asks", body: "Answer the PM in its pane; the plan follows", level: "info", action: { name: "tab.select", args: { id: tab } } });
@@ -587,6 +635,10 @@ async function waitPlan(tab, g, before) {
 
 async function startSubtask(tab, g, at) {
   const p = pair(tab);
+  if (at > 0) {
+    update(tab, { note: `Subtask ${at + 1}/${p.plan.tasks.length}: clearing the agents' conversations` });
+    for (const role of ["writer", "tester", "reviewer"]) await fresh(tab, g, roleOf(p, role), role);
+  }
   update(tab, { plan: { ...p.plan, at }, taskStart: p.round ?? 0, phase: "writing", note: `Subtask ${at + 1}/${p.plan.tasks.length}: coder is working` });
   const q = pair(tab), s = q.plan.tasks[at];
   const text = `Subtask ${at + 1} of ${q.plan.tasks.length} from the PM's plan (${PLAN})${q.task ? `; the whole task: ${q.task.replace(/\s+/g, " ")}` : ""}.\n\n## ${s.title}\n${s.body}`;
@@ -608,7 +660,7 @@ function docsBrief(p) {
     `Bring the documentation up to date with it: the README (what it does, how to install and use it), the changelog if the ` +
     `project keeps one, docs/ and other Markdown, and doc comments only where the project already has them. Match the existing ` +
     `style; add nothing the change doesn't need, and don't invent features. Edit documentation only, never code or tests. ` +
-    `Then write to ${DOCS} what you updated and why, file by file (or that nothing needed changing). Then stop.`;
+    `Then write to ${DOCS} what you updated and why, file by file (or that nothing needed changing).${FINISH} Then stop.`;
 }
 async function writeDocs(tab, g) {
   const p = pair(tab), docs = roleOf(p, "docs");
@@ -616,6 +668,7 @@ async function writeDocs(tab, g) {
   update(tab, { phase: "documenting", note: "All subtasks approved: the docs writer is updating the documentation" });
   const before = await snapshot(p, "before-docs", "coderwriter: before the docs writer");
   await say(tab, g, docs.t, "docs", docsBrief(pair(tab)));
+  await remind(tab, g, docs.t, "docs", DOCS, () => exists(pair(tab), DOCS), (ok) => !ok);
   const after = await snapshot(pair(tab), "after-docs", "coderwriter: after the docs writer");
   if (!before || !after) return;
   const r = await sh(pair(tab), 'git diff --name-only "$1" "$2"', [before, after]).catch(() => null);
@@ -637,6 +690,7 @@ async function afterApproval(tab, g) {
   await writeDocs(tab, g);
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
   await say(tab, g, roleOf(p, "pm").t, "pm", reportBrief(p));
+  await remind(tab, g, roleOf(p, "pm").t, "pm", REPORT, () => exists(pair(tab), REPORT), (ok) => !ok);
   update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
   notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.${worktreeNote(p)}`,
     level: "success", action: { name: "tab.select", args: { id: tab } } });
@@ -843,7 +897,8 @@ async function reviewRound(tab, g, kinds = null) {
   update(tab, { round, phase: kinds ? "auditing" : "reviewing", verdict: null, repeats: [], testFixes: 0, note: `Round ${round}: ${what}`,
     ...(kinds ? { audits: { ...(p.audits ?? {}), [round]: kinds } } : {}) });
   await say(tab, g, p.reviewer.t, "reviewer", kinds ? auditBrief(p, round, kinds, found) : reviewBrief(p, round, lens));
-  const v = await verdictOf(pair(tab), round);
+  const v = await remind(tab, g, p.reviewer.t, "reviewer", `${REVIEW_DIR}/review-${round}.md`, () => verdictOf(pair(tab), round),
+    (r) => r.verdict === "missing" || r.verdict === "unknown", ["APPROVED", "CHANGES_REQUESTED"]);
   let repeats = [];
   if (v.verdict === "changes" && round > 1) {
     const before = await verdictOf(pair(tab), round - 1);
