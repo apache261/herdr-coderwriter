@@ -57,8 +57,8 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
 - **Test files are the tester's**: files are snapshotted after the tester runs, and a coder
   that edits a test gets it back as a finding (the tester is told to check it).
 - **A fresh conversation per subtask**: before each subtask after the first, the coder,
-  tester and reviewer start a new conversation (Claude Code `/clear`, Codex `/new`; a role's
-  own command line keeps its own). Their briefs and `.coderwriter/` carry what they need, so a
+  tester and reviewer that run Claude Code start a new conversation (`/clear`; Codex and
+  custom models keep theirs, since Codex's `/new` stops at a question in a git repo). Their briefs and `.coderwriter/` carry what they need, so a
   long plan doesn't run on a context compacted again and again.
 - **On screen**: the team's tab is a 2×2 grid in the order the work flows (PM over Coder,
   Tester over Reviewer); the bar shows the flow as a strip (`2/3 PM › Coder › Tester › Tests ›

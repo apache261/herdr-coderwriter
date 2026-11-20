@@ -266,18 +266,26 @@ async function exists(p, rel) {
   try { return (await readTextFile(join(p.folder, rel), where(p))) != null; } catch { return false; }
 }
 
-// A new conversation for an agent: Claude Code's /clear, Codex's /new (custom models run
-// Codex); a role's own command line keeps its own. Its brief and the files in
+// A new conversation for an agent: Claude Code's /clear. Others keep theirs: Codex's /new
+// stops at a question in a git repo ("Where should the new conversation run?"), which the
+// next brief would be typed into. Its brief and the files in
 // .coderwriter/ carry what it needs, so each subtask of a long plan starts from a clean
 // context rather than one compacted again and again. Not clearing is never fatal.
-const CLEAR = { claude: "/clear", codex: "/new" };
+// hc wraps a message sent from inside a terminal as <hc from="…">…</hc>, which makes a slash
+// command a plain prompt the agent answers, so the command goes as from no terminal. It
+// starts no turn (hc reports started: false), so there is no turn to wait for: give the
+// agent a moment, then wait until it's at its prompt again.
+const CLEAR = { claude: "/clear" };
+const SEND_COMMAND = 'unset HC_TERMINAL_ID HC_SCOPE; exec hc send --json "$1" "$2"';
 async function fresh(tab, g, who, role) {
-  const cmd = CLEAR[who?.agent] ?? (isCustom(who?.agent) ? CLEAR.codex : null);
+  const cmd = CLEAR[who?.agent];
   if (!cmd || !who.t) return;
   await ready(tab, g, who.t, role);
-  const r = await hcJson(["send", "--wait", "--json", "--timeout", "30", who.t, cmd], 60000).catch(() => null);
+  const r = await exec("sh", ["-c", SEND_COMMAND, "sh", who.t, cmd], { timeout: 30000 }).catch(() => null);
   if (gen[tab] !== g) throw new Cancelled();
-  if (!r || r.started === false) update(tab, { note: `Could not clear the ${role}'s conversation: it keeps it` });
+  if (r?.code !== 0) { update(tab, { note: `Could not clear the ${role}'s conversation: it keeps it` }); return; }
+  await sleep(2000);
+  await ready(tab, g, who.t, role);
 }
 
 // ---- review skills ----------------------------------------------------------------
