@@ -58,8 +58,13 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   that edits a test gets it back as a finding (the tester is told to check it).
 - **A fresh conversation per subtask**: before each subtask after the first, the coder,
   tester and reviewer that run Claude Code start a new conversation (`/clear`; Codex and
-  custom models keep theirs, since Codex's `/new` stops at a question in a git repo). Their briefs and `.coderwriter/` carry what they need, so a
-  long plan doesn't run on a context compacted again and again.
+  custom models keep theirs, since Codex's `/new` stops at a question in a git repo), so a
+  long plan doesn't run on a context compacted again and again. What survives the clear:
+  - **their role**: each Claude Code agent of a team starts with its role and standing rules
+    in its system prompt (`--append-system-prompt`), which `/clear` doesn't touch;
+  - **the earlier subtasks**: when one is approved, coderwriter adds what it changed and the
+    coder's notes to `.coderwriter/progress.md`, and the next subtask's briefs point there and
+    scope the tester and reviewer to that subtask's own diff.
 - **On screen**: the team's tab is a 2×2 grid in the order the work flows (PM over Coder,
   Tester over Reviewer); the bar shows the flow as a strip (`2/3 PM › Coder › Tester › Tests ›
   Quality › Security`: working, passed, failed or waiting on you); the Reviews panel shows
@@ -181,7 +186,8 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
 | `review-<n>.md` | round n: the verdict and findings (for a team, every check's failures in one note) |
 | `tests-<n>.txt` | the test command's output in round n |
 | `round-<n>/<check>.md` | a team's per-check reports: `tester`, `quality`, `security`, and the coder's notes `coder.md` |
-| `coder.md` | the team coder's latest notes on what it changed |
+| `coder.md` | the team coder's notes on the current subtask |
+| `progress.md` | each approved subtask: its files changed and the coder's notes |
 | `plan.md`, `report.md` | the team PM's plan and final report |
 | `docs.md` | what the docs writer updated |
 | `security-audit/` | the security audit's working files |
