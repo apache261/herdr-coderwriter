@@ -34,13 +34,16 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
               for each subtask:  Coder ─▶ Tester ─▶ Tests ─▶ Quality ─▶ Security
                                    ▲                                       │
                                    └────── every failure, in one note ◀────┘
-              all subtasks pass ─▶ Docs writer ─▶ PM's report ─▶ offer of a full audit
+              all subtasks pass ─▶ final check of the whole change (same checks, same loop)
+                                ─▶ Docs writer ─▶ PM's report ─▶ offer of a full audit
 ```
 
 - **PM** reads the repository, asks you what's unclear in its pane, and writes
   `.coderwriter/plan.md`: subtasks with *Do*, *Done when* and *Tests*. The Plan dialog shows
   it: ask the PM for changes, or **Approve & start**. The PM plans and reports; coderwriter
   itself does the hand-offs, so a confused agent can't derail them.
+- **Checked against the plan**: the tester and the quality check get the subtask as the PM
+  wrote it, so the tester covers its *Tests* and both check that its *Done when* holds.
 - **Every check runs every round**, even when one fails, and all failures go to the coder in
   one note (`.coderwriter/review-<n>.md`):
   - **Tester**: writes or updates unit and functional tests in the project's own framework,
@@ -50,8 +53,14 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   - **Security**: the reviewer, on this change only (injection, path traversal, XSS, auth,
     secrets, SSRF, CSRF, crypto, dependencies, data exposure), real issues only, using the
     principles of Cloudflare's skill when installed.
+- **A final check of the whole change**: each subtask is checked on its own diff, so once the
+  last one passes, the coder, tester and reviewer start fresh and run one more round over the
+  whole change: the full suite and tests where the subtasks meet, then quality and security
+  looking for what only shows with the parts together (a later subtask breaking or going
+  around an earlier one, the same thing done two ways, loose ends, whether the goal is met).
+  Failures go back to the coder as in any round. A plan of one subtask skips it.
 - **Docs writer** (optional, on by default; a switch in its row): once every subtask has
-  passed, it updates the README, the changelog, `docs/` and other Markdown to match the change,
+  passed (and the final check), it updates the README, the changelog, `docs/` and other Markdown to match the change,
   in the project's style, and says what it changed in `.coderwriter/docs.md`. It edits
   documentation only: anything else it changes is named in a warning before you commit.
 - **Test files are the tester's**: files are snapshotted after the tester runs, and a coder
@@ -67,7 +76,7 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
     scope the tester and reviewer to that subtask's own diff.
 - **On screen**: the team's tab is a 2×2 grid in the order the work flows (PM over Coder,
   Tester over Reviewer); the bar shows the flow as a strip (`2/3 PM › Coder › Tester › Tests ›
-  Quality › Security`: working, passed, failed or waiting on you); the Reviews panel shows
+  Quality › Security`, or `final` during the final check: working, passed, failed or waiting on you); the Reviews panel shows
   each round's summary, the coder's notes, every check's own report, and the PM's plan and
   report.
 

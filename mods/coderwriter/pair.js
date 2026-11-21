@@ -335,9 +335,11 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
   const sub = subtaskScope(p, round);
   const scope = !sub ? "" : ` ${doneBefore(sub)}: review only this subtask's change` +
     (sub.base && now ? `, \`git diff ${sub.base} ${now}\` (snapshots that include untracked files)` : "") + ".";
-  const snaps = !now ? "" : round > 1 && prev && !sub?.first
+  const final = isFinal(p), body = out.criteria ? subtaskBody(p) : "";
+  const crit = body ? ` Check the change against the subtask as the PM planned it, and that its "Done when:" holds:\n\n${quoted(body)}\n\n` : "";
+  const snaps = !now || (final && firstRound(p, round)) ? "" : round > 1 && prev && !firstRound(p, round)
     ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check the findings of ${REVIEW_DIR}/review-${round - 1}.md were addressed.` +
-      (base ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "")
+      (base && !final ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "")
     : base ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\` (snapshots that include untracked files).` : "";
   const t = p.tests;
   const tests = t?.round !== round ? "" : t.state === "pass" ? ` The tests (\`${t.cmd}\`) pass.`
@@ -345,8 +347,9 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
   const notes = p.kind === "team" ? ` The writer's own notes on the change: ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` : "";
   const who = p.kind === "team" ? `You are the REVIEWER in a team (round ${round}).` : `You are the REVIEWER in a writer/reviewer pair (round ${round}).`;
   return who + (out.focus ?? "") +
-    (taskText(p) ? ` The writer's task: ${taskText(p)}.` : "") +
-    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` + scope + snaps + tests + notes +
+    (taskText(p) ? ` The writer's task: ${taskText(p)}.` : "") + crit +
+    ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` +
+    (final ? finalFocus(p, round, out.check ?? "quality") : "") + scope + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: ${out.ok}" or "VERDICT: ${out.no}",` +
     ` then numbered findings, most important first, each with the file and what to change.` + FINISH + ` Then stop.`;
@@ -460,12 +463,12 @@ async function testsStage(tab, g, round) {
 
 // Quality and Security are the reviewer's two checks, one message each, in that order.
 export function qualityBrief(p, round, file, found) {
-  return reviewBrief(p, round, found.lens, { file, ok: "PASS", no: "FAIL",
+  return reviewBrief(p, round, found.lens, { file, ok: "PASS", no: "FAIL", check: "quality", criteria: true,
     focus: " This is the QUALITY check: does the change do what the task asks, correctly (edge cases, errors, callers it breaks)," +
       " and is it clear, lean and in the style of the codebase? A security check follows and the tester owns the tests: leave those to them." });
 }
 export function securityBrief(p, round, file, found) {
-  return reviewBrief(p, round, null, { file, ok: "PASS", no: "FAIL",
+  return reviewBrief(p, round, null, { file, ok: "PASS", no: "FAIL", check: "security",
     focus: " This is the SECURITY check, of this change only (the quality check is done): untrusted input reaching SQL, a shell," +
       " file paths, templates or HTML (injection, path traversal, XSS); authentication and authorization; secrets in code, logs or errors;" +
       " unsafe deserialization; SSRF; CSRF; weak or home-made crypto; new dependencies; data leaking to the wrong user." +
@@ -481,16 +484,18 @@ export function testerBrief(p, round, file) {
   const sub = subtaskScope(p, round);
   const scope = !sub ? "" : ` ${doneBefore(sub)}. Tests from earlier subtasks stay and must keep passing; write tests for this subtask's change` +
     (sub.base && now ? `, \`git diff ${sub.base} ${now}\`` : "") + ".";
-  const since = round > 1 && prev && now && !sub?.first ? ` Since round ${round - 1} the coder changed \`git diff ${prev} ${now}\`.` : "";
-  const whole = base && now ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "";
+  const final = isFinal(p), body = subtaskBody(p);
+  const crit = body ? ` The subtask as the PM planned it; test what its "Tests:" asks for and that its "Done when:" holds:\n\n${quoted(body)}\n\n` : "";
+  const since = round > 1 && prev && now && !firstRound(p, round) ? ` Since round ${round - 1} the coder changed \`git diff ${prev} ${now}\`.` : "";
+  const whole = final && firstRound(p, round) ? "" : base && now ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "";
   const cmd = testCommand(p.folder);
   return `You are the TESTER in a team (round ${round}).` +
-    (taskText(p) ? ` The coder's task: ${taskText(p)}.` : "") +
+    (taskText(p) ? ` The coder's task: ${taskText(p)}.` : "") + crit +
     ` The coder's uncommitted changes are in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/);` +
-    ` its notes are in ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` + scope + since + whole + touched +
+    ` its notes are in ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` + (final ? finalFocus(p, round, "tester") : "") + scope + since + whole + touched +
     ` 1) Write or update unit tests and functional tests for what the change should do, in the project's own test framework and folders` +
     ` (none yet: use the usual one for the language and say so): the normal case, edge cases and the errors the task implies.` +
-    (round > 1 && !sub?.first ? ` Keep your earlier tests; if the coder argues in its notes that one is wrong, check, and fix the test only if it is.` : "") +
+    (round > 1 && !firstRound(p, round) ? ` Keep your earlier tests; if the coder argues in its notes that one is wrong, check, and fix the test only if it is.` : "") +
     ` 2) Run your tests and the existing suite${cmd ? ` (the project's test command is \`${cmd}\`)` : ""}.` +
     ` Edit only test files, fixtures and test config; never change the code under test: when the code is wrong, that is a finding.` +
     ` Write your report to ${file}: the first line exactly "VERDICT: PASS" (every test passes and the change is covered) or "VERDICT: FAIL",` +
@@ -616,8 +621,37 @@ export function charterArgs(key, role) {
 // before it: how many were done, the snapshot its change starts from, and whether this
 // round is its first.
 function subtaskScope(p, round) {
-  if (!planRunning(p) || !p.plan.at) return null;
-  return { done: p.plan.at, base: p.subtaskBase ?? null, first: round === (p.taskStart ?? 0) + 1 };
+  if (!planRunning(p) || !p.plan.at || p.plan.final) return null;
+  return { done: p.plan.at, base: p.subtaskBase ?? null, first: firstRound(p, round) };
+}
+// The first round of a subtask (or of the final check): the agents were cleared before it,
+// and the round before belongs to another subtask, so "since round n-1" means nothing to them.
+const firstRound = (p, round) => planRunning(p) && round === (p.taskStart ?? 0) + 1;
+
+// The current subtask as the PM wrote it (Do / Done when / Tests), for the tester and the
+// quality check, who otherwise get only its title.
+const MAX_BODY = 4000;
+function subtaskBody(p) {
+  const s = planRunning(p) && !p.plan.final ? p.plan.tasks[p.plan.at] : null;
+  const body = (s?.body ?? "").trim();
+  return body.length > MAX_BODY ? body.slice(0, MAX_BODY) + `\n… (cut here; the rest is in ${PLAN})` : body;
+}
+const quoted = (text) => text.split("\n").map((l) => `> ${l}`).join("\n");
+
+// The final check: once every subtask of a plan passed on its own, one more round of the
+// team's checks over the whole change, for what only shows with the parts together.
+const isFinal = (p) => Boolean(planRunning(p) && p.plan.final);
+function finalFocus(p, round, who) {
+  const cp = p.checkpoints ?? {}, base = cp[0], now = cp[round], n = p.plan.tasks.length;
+  const diff = base && now ? `\`git diff ${base} ${now}\` (snapshots that include untracked files)` : "git status and git diff";
+  return ` This is the FINAL CHECK of the whole plan: ${n === 2 ? "both" : `all ${n}`} subtasks of ${PLAN} were approved one by one (what each changed: ${PROGRESS}),` +
+    ` and now they are checked together. The whole change is ${diff}.` + {
+      tester: ` Run the whole test suite, and add tests where the subtasks meet (one subtask's code used by another) and for the plan's goal end to end.`,
+      quality: ` Look for what only shows with the parts together: a later subtask breaking or bypassing an earlier one, the same thing done` +
+        ` two ways, loose ends (unused code, TODOs, half-wired features), and whether the plan's goal is met as a whole.`,
+      security: ` Look most at where the subtasks meet: input checked in one part and used unchecked in another, a check one subtask` +
+        ` added that a later one goes around.`,
+    }[who];
 }
 const doneBefore = (sub) => `Subtask${sub.done === 1 ? " 1 was" : `s 1–${sub.done} were`} approved already (see ${PROGRESS})`;
 
@@ -652,7 +686,8 @@ const reviseBrief = (text) => `The user wants changes to the plan: ${text}\n\nRe
   `(ask here first if something is unclear). Then stop.`;
 function reportBrief(p) {
   const n = p.plan.tasks.length;
-  return `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security). ` +
+  return `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security)` +
+    (n > 1 ? `, one by one and then together in a final check of the whole change. ` : ". ") +
     (roleOf(p, "docs") ? `The docs writer updated the documentation (see ${DOCS}). ` : "") +
     `Write a short report for the user to ${REPORT}: for each subtask what was done (see ${PROGRESS}, the reports in ` +
     `${REVIEW_DIR}/round-*/ and git diff), the tests added, anything still open or worth a second look, and what to check before ` +
@@ -669,6 +704,7 @@ export function planTasks(text) {
 export function taskText(p) {
   const s = p.plan?.approved && !p.plan.done ? p.plan.tasks[p.plan.at] : null;
   const task = (p.task ?? "").replace(/\s+/g, " ").trim();
+  if (s && p.plan.final) return `the whole plan in ${PLAN}, ${p.plan.tasks.length === 2 ? "both" : `all ${p.plan.tasks.length}`} subtasks together${task ? `; the whole task: ${task}` : ""}`;
   return s ? `${s.title} (subtask ${p.plan.at + 1} of ${p.plan.tasks.length} in ${PLAN}${task ? `; the whole task: ${task}` : ""})` : task;
 }
 export function askPlan(tab) {
@@ -754,14 +790,37 @@ async function writeDocs(tab, g) {
     level: "warning", action: { name: "tab.select", args: { id: tab } } });
 }
 
-// A subtask was approved: hand out the next one, or have the PM report. "next" or "done".
+// The final check begins: the agents are cleared, and the next round (the loop's, or
+// Review's) checks the whole change. A plan of one subtask has none: that was the whole change.
+async function startFinal(tab, g) {
+  const p = pair(tab);
+  update(tab, { note: "Every subtask approved: clearing the agents for the final check" });
+  for (const role of ["writer", "tester", "reviewer"]) await fresh(tab, g, roleOf(p, role), role);
+  update(tab, { plan: { ...pair(tab).plan, final: true }, taskStart: pair(tab).round ?? 0, phase: "written",
+    note: "Final check: the whole change, every subtask together" });
+}
+
+// A subtask (or the final check) was approved: hand out the next subtask, start the final
+// check, or have the docs writer and the PM finish. "next" or "done".
 async function afterApproval(tab, g) {
-  await logProgress(tab);
-  const p = pair(tab), n = p.plan.tasks.length;
-  if (p.plan.at < n - 1) {
-    notify({ title: "coderwriter", body: `Subtask ${p.plan.at + 1}/${n} approved: on to ${p.plan.at + 2}`, level: "info" });
-    await startSubtask(tab, g, p.plan.at + 1);
-    return "next";
+  let p = pair(tab);
+  const n = p.plan.tasks.length;
+  if (!p.plan.final) {
+    await logProgress(tab);
+    p = pair(tab);
+    if (p.plan.at < n - 1) {
+      notify({ title: "coderwriter", body: `Subtask ${p.plan.at + 1}/${n} approved: on to ${p.plan.at + 2}`, level: "info" });
+      await startSubtask(tab, g, p.plan.at + 1);
+      return "next";
+    }
+    if (n > 1) {
+      notify({ title: "coderwriter", body: `${n === 2 ? "Both" : `All ${n}`} subtasks approved: a final check of the whole change`, level: "info" });
+      await startFinal(tab, g);
+      return "next";
+    }
+  } else {
+    await sh(p, 'printf "%s" "$2" >> "$1"', [PROGRESS, `## Final check of the whole change\n\nApproved in round ${p.round} ` +
+      `(rounds ${(p.taskStart ?? 0) + 1}–${p.round}).\n\n`]).catch(() => null);
   }
   await writeDocs(tab, g);
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });

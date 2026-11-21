@@ -57,7 +57,8 @@ export class Plan {
     const tasks = P.planTasks(this.text);
     const running = Boolean(p?.plan?.approved && !p.plan.done);
     const status = !p ? "This team is gone."
-      : running ? `Approved and running: subtask ${p.plan.at + 1} of ${p.plan.tasks.length}`
+      : running ? (p.plan.final ? "Every subtask approved: final check of the whole change"
+        : `Approved and running: subtask ${p.plan.at + 1} of ${p.plan.tasks.length}`)
       : p.plan?.done ? "Done: every subtask was approved"
       : this.text == null ? (this.loaded ? "The PM hasn't written the plan yet" : "Reading the plan…")
       : tasks.length ? `${tasks.length} subtask${tasks.length === 1 ? "" : "s"}: approve to start the team (Auto)`

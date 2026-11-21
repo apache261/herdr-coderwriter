@@ -213,7 +213,7 @@ class Bar {
         tip: { active: "updating the documentation", fail: `changed more than docs: ${(p.docsOther ?? []).join(", ")}`, pass: "documentation updated", pending: "at the end" }[s] });
     }
     const color = { active: t.working, pass: ok, fail: t.blocked, you: t.accent, unknown: t.dim, pending: t.dim };
-    const plan = p.plan?.approved && !p.plan.done ? `${p.plan.at + 1}/${p.plan.tasks.length}` : null;
+    const plan = p.plan?.approved && !p.plan.done ? (p.plan.final ? "final" : `${p.plan.at + 1}/${p.plan.tasks.length}`) : null;
     return h_flex().id("team-strip").flex_none().gap(1).items_center()
       .when(Boolean(plan), (el) => el.child(div().pr(5).text_size(11.3).font_semibold().text_color(t.muted).child(plan)))
       .children(steps.flatMap((x, i) => [
