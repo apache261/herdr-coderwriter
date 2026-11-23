@@ -7,9 +7,10 @@ import { exec, shared, setShared, terminals, spaces, panes, run, notify, readTex
 
 export const PAIRS = "coderwriter.pairs";
 export const PREFS = "coderwriter.prefs";
-export const AGENTS = ["claude", "codex"]; // the agents with launch flags (the Launch popup)
-// Each role's model and effort, added to its agent's launch: Claude Code takes both
-// (--model, --effort), Codex the effort (model_reasoning_effort). "" means the agent's own.
+export const AGENTS = ["claude", "codex", "gemini", "antigravity"]; // the agents with launch flags (the Launch popup)
+// Each role's model and effort, added to its agent's launch: Claude Code and Antigravity
+// take both (--model, --effort), Gemini takes --model, Codex takes effort
+// (model_reasoning_effort). "" means the agent's own default.
 // The recommended setup: Claude Code everywhere, the strongest model where judgment pays
 // (planning, reviewing), lighter where the job is well specified (tests, docs).
 export const RECOMMENDED = {
@@ -19,17 +20,53 @@ export const RECOMMENDED = {
   reviewer: { agent: "claude", model: "opus", effort: "high" },
   docs: { agent: "claude", model: "sonnet", effort: "low" },
 };
-export const MODELS = { claude: ["", "opus", "sonnet", "haiku"] };
-export const EFFORTS = { claude: ["", "low", "medium", "high", "xhigh", "max"], codex: ["", "low", "medium", "high"] };
+export const MODELS = {
+  claude: ["", "opus", "sonnet", "haiku"],
+  gemini: ["", "auto", "pro", "flash", "flash-lite"],
+  antigravity: ["", "gemini-4-neon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-3.8-flash", "claude-opus-5-5", "claude-sonnet-5-5"],
+};
+export const EFFORTS = {
+  claude: ["", "low", "medium", "high", "xhigh", "max"],
+  codex: ["", "low", "medium", "high"],
+  antigravity: ["", "low", "medium", "high", "xhigh"],
+};
+// Only Neon and Hydrogen expose an xhigh variant in agy; keep other models on low/medium/high.
+export function effortsFor(key, model = "") {
+  if (key === "antigravity" && model && model !== "gemini-4-neon" && model !== "gemini-4-hydrogen") {
+    return ["", "low", "medium", "high"];
+  }
+  return EFFORTS[key] ?? null;
+}
 export function useRecommended() {
   const pr = prefs();
   setPrefs({ ...Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, d.agent])),
     tune: Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, { model: d.model, effort: d.effort }])), commands: pr.commands });
 }
-function tuneArgs(key, role) {
+function flagValue(args, names) {
+  for (let i = 0; i < args.length; i++) {
+    for (const n of names) {
+      if (args[i] === n) return args[i + 1] ?? "";
+      if (args[i].startsWith(n + "=")) return args[i].slice(n.length + 1);
+    }
+  }
+  return null;
+}
+function tuneArgs(key, role, extraFlags = []) {
   const t = role ? prefs().tune[role] ?? {} : {};
-  if (key === "claude") return [...(t.model ? ["--model", t.model] : []), ...(t.effort ? ["--effort", t.effort] : [])];
-  if (key === "codex") return t.effort ? ["-c", `model_reasoning_effort="${t.effort}"`] : [];
+  const models = MODELS[key];
+  const model = models && models.includes(t.model) ? t.model : "";
+  const efforts = effortsFor(key, model);
+  const effort = efforts && efforts.includes(t.effort) ? t.effort : "";
+  const userModel = flagValue(extraFlags, ["--model", "-m"]);
+  const userEffort = flagValue(extraFlags, ["--effort"]);
+  if (key === "claude") return [...(!userModel && model ? ["--model", model] : []), ...(!userEffort && effort ? ["--effort", effort] : [])];
+  if (key === "codex") return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
+  if (key === "gemini") return !userModel && model ? ["--model", model] : [];
+  if (key === "antigravity") {
+    // agy rejects --effort when --model already includes an effort suffix (e.g. gemini-4-neon-high).
+    const modelHasEffort = typeof userModel === "string" && /-(low|medium|high|xhigh|max)$/i.test(userModel);
+    return [...(!userModel && model ? ["--model", model] : []), ...(!userEffort && !modelHasEffort && effort ? ["--effort", effort] : [])];
+  }
   return [];
 }
 // A role's own command line (prefs.commands[role]) instead of an agent: agent key "cmd".
@@ -38,8 +75,8 @@ export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
   const p = { writer: "claude", reviewer: "claude", max: 3, auto: false, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...(shared(PREFS) ?? {}) };
-  p.flags = { claude: "", codex: "", ...(p.flags ?? {}) };
-  p.menu = { claude: false, codex: false, ...(p.menu ?? {}) };
+  p.flags = { claude: "", codex: "", gemini: "", antigravity: "", ...(p.flags ?? {}) };
+  p.menu = { claude: false, codex: false, gemini: false, antigravity: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
   p.commands = { writer: "", reviewer: "", tester: "", pm: "", docs: "", ...(p.commands ?? {}) };
   p.tune = Object.fromEntries(Object.entries(RECOMMENDED).map(([role, d]) => [role, { model: d.model, effort: d.effort, ...(p.tune?.[role] ?? {}) }]));
@@ -96,7 +133,7 @@ export function customArgv(m) {
 }
 
 // How each agent starts with no extra flags: Herdr's own commands for them.
-export const BASE_RUN = { claude: ["claude"], codex: ["codex", "--no-daemon"] };
+export const BASE_RUN = { claude: ["claude"], codex: ["codex", "--no-daemon"], gemini: ["gemini"], antigravity: ["agy"] };
 
 // Split a flags string like a shell would (quotes, backslashes), without running one.
 export function splitArgs(text) {
@@ -128,7 +165,8 @@ export function launchArgv(agent, role = null) {
   // Custom models run Codex, so they take Codex's flags.
   if (m) return [...customArgv(m), ...splitArgs(prefs().flags.codex ?? "")];
   const base = BASE_RUN[agent.key] ?? agent.run;
-  return [...base, ...splitArgs(prefs().flags[agent.key] ?? ""), ...tuneArgs(agent.key, role)];
+  const extra = splitArgs(prefs().flags[agent.key] ?? "");
+  return [...base, ...extra, ...tuneArgs(agent.key, role, extra)];
 }
 export function setPrefs(patch) { setShared(PREFS, { ...prefs(), ...patch }); }
 
@@ -266,16 +304,17 @@ async function exists(p, rel) {
   try { return (await readTextFile(join(p.folder, rel), where(p))) != null; } catch { return false; }
 }
 
-// A new conversation for an agent: Claude Code's /clear. Others keep theirs: Codex's /new
-// stops at a question in a git repo ("Where should the new conversation run?"), which the
-// next brief would be typed into. Its brief and the files in
-// .coderwriter/ carry what it needs, so each subtask of a long plan starts from a clean
-// context rather than one compacted again and again. Not clearing is never fatal.
+// A new conversation for an agent: /clear on Claude Code, Gemini CLI and Antigravity
+// (agy). Codex keeps its conversation: its /new stops at a question in a git repo
+// ("Where should the new conversation run?"), which the next brief would be typed into.
+// Its brief and the files in .coderwriter/ carry what it needs, so each subtask of a
+// long plan starts from a clean context rather than one compacted again and again. Not
+// clearing is never fatal.
 // hc wraps a message sent from inside a terminal as <hc from="…">…</hc>, which makes a slash
 // command a plain prompt the agent answers, so the command goes as from no terminal. It
 // starts no turn (hc reports started: false), so there is no turn to wait for: give the
 // agent a moment, then wait until it's at its prompt again.
-const CLEAR = { claude: "/clear" };
+const CLEAR = { claude: "/clear", gemini: "/clear", antigravity: "/clear" };
 const SEND_COMMAND = 'unset HC_TERMINAL_ID HC_SCOPE; exec hc send --json "$1" "$2"';
 async function fresh(tab, g, who, role) {
   const cmd = CLEAR[who?.agent];
@@ -303,8 +342,8 @@ export const SKILLS = {
 };
 export const AUDITS = ["security", "ponytail"];
 // shortcut: the first match wins, so of several cached plugin versions the lexically first is used.
-const FIND_SKILL = 'for n in "$@"; do for f in ".claude/skills/$n/SKILL.md" ".agents/skills/$n/SKILL.md" ".codex/skills/$n/SKILL.md" ' +
-  '"$HOME/.claude/skills/$n/SKILL.md" "$HOME/.agents/skills/$n/SKILL.md" "$HOME/.codex/skills/$n/SKILL.md" ' +
+const FIND_SKILL = 'for n in "$@"; do for f in ".claude/skills/$n/SKILL.md" ".agents/skills/$n/SKILL.md" ".agent/skills/$n/SKILL.md" ".codex/skills/$n/SKILL.md" ".gemini/skills/$n/SKILL.md" ' +
+  '"$HOME/.claude/skills/$n/SKILL.md" "$HOME/.agents/skills/$n/SKILL.md" "$HOME/.codex/skills/$n/SKILL.md" "$HOME/.gemini/skills/$n/SKILL.md" "$HOME/.gemini/config/skills/$n/SKILL.md" ' +
   '"$HOME"/.claude/plugins/cache/*/*/*/skills/"$n"/SKILL.md "$HOME"/.codex/plugins/cache/*/*/*/skills/"$n"/SKILL.md; do ' +
   'if [ -f "$f" ]; then case "$f" in /*) ;; *) f="$PWD/$f" ;; esac; printf "%s\\t%s\\n" "$n" "$f"; break; fi; done; done';
 // { lens, security, ponytail }: each skill's SKILL.md path, or null.

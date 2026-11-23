@@ -59,7 +59,7 @@ export class NewPair {
     cx.timer.after(50, () => this.input.focus());
     // Each role's own command line (used when its agent is "Command").
     this.cmds = {};
-    for (const role of ["writer", "reviewer", "tester", "pm"]) {
+    for (const role of ["writer", "reviewer", "tester", "pm", "docs"]) {
       const input = InputState.new({ placeholder: "Command line, e.g. claude --model sonnet" });
       input.set_value(P.prefs().commands[role] ?? "");
       input.on("change", (_e, cx) => { P.setPrefs({ commands: { ...P.prefs().commands, [role]: input.value() } }); cx.notify(); });
@@ -155,14 +155,18 @@ export class NewPair {
       .child(div().size(11).rounded(6).bg(on ? t.accent_foreground : t.background));
   }
 
-  // The role's model and effort for Claude Code (both) or Codex (effort): each chip steps
-  // to the next value; "default" leaves it to the agent.
+  // The role's model and effort for Claude Code / Antigravity (both), Gemini (model),
+  // or Codex (effort): each chip steps to the next value; "default" leaves it to the agent.
   tune(t, role) {
-    const pr = P.prefs(), key = pr[role], models = P.MODELS[key], efforts = P.EFFORTS[key];
-    if (!efforts) return div();
+    const pr = P.prefs(), key = pr[role], models = P.MODELS[key];
     const cur = pr.tune[role] ?? {};
+    const curModel = models && models.includes(cur.model) ? cur.model : "";
+    const efforts = P.effortsFor(key, curModel);
+    if (!models && !efforts) return div();
     const chip = (id, label, list, field) => {
-      const v = cur[field] ?? "", next = list[(list.indexOf(v) + 1) % list.length];
+      const raw = cur[field] ?? "";
+      const v = list.includes(raw) ? raw : "";
+      const next = list[(list.indexOf(v) + 1) % list.length];
       return h_flex().id(`${role}-${id}`).h(24).px(8).gap(5).items_center().flex_none().rounded(6).border_1().border_color(t.border).bg(t.background)
         .text_size(11.5).cursor_pointer().hover((s) => s.bg(t.hover))
         .tooltip(`Click for the next one: ${list.map((x) => x || "default").join(", ")}`)
@@ -171,7 +175,7 @@ export class NewPair {
     };
     return h_flex().gap(6).items_center()
       .when(Boolean(models), (el) => el.child(chip("model", "Model", models, "model")))
-      .child(chip("effort", "Effort", efforts, "effort"));
+      .when(Boolean(efforts), (el) => el.child(chip("effort", "Effort", efforts, "effort")));
   }
 
   link(t, id, icon, text, onClick) {
@@ -264,7 +268,7 @@ export class NewPair {
         .children((team ? ["pm", "writer", "tester", "reviewer", "docs"] : ["writer", "reviewer"]).map((role) => this.roleRow(t, role, team)))
         .child(h_flex().gap(14).items_center().text_size(11.8)
           .child(this.link(t, "np-launch", "terminal", "Launch flags…",
-            () => openOverlay({ mod: "coderwriter", kind: "popup", width: 470, height: 486, props: { role: "launch" } })))
+            () => openOverlay({ mod: "coderwriter", kind: "popup", width: 480, height: 560, props: { role: "launch" } })))
           .child(this.link(t, "np-recommended", "check", "Recommended setup", () => P.useRecommended()))
           .child(this.link(t, "np-models", "cpu", "Custom models…",
             () => openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }))))

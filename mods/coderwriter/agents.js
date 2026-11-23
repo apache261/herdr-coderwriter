@@ -31,6 +31,13 @@ export async function refreshKnown(machine) {
   return ours;
 }
 
+const FALLBACK = {
+  claude: { name: "Claude Code", icon: "icons/claude.svg", tint: false },
+  codex: { name: "Codex", icon: "icons/codex.svg", tint: false },
+  gemini: { name: "Gemini", icon: "icons/gemini.svg", tint: true },
+  antigravity: { name: "Antigravity", icon: "icons/antigravity.svg", tint: false },
+};
+
 // An agent Herdr knows, a custom model (which runs Codex, so it's installed when Codex is),
 // or (key "cmd") the role's own command line.
 export function agentFor(key, list, role = null) {
@@ -44,14 +51,15 @@ export function agentFor(key, list, role = null) {
     return { key, name: modelLabel(m), icon: I("cpu"), tint: true, installed: codex ? codex.installed : null, custom: m };
   }
   if (P.isCustom(key)) return { key, name: "Removed model", icon: I("cpu"), tint: true, installed: false };
-  return list.find((a) => a.key === key) ?? { key, name: key === "claude" ? "Claude Code" : "Codex", icon: `icons/${key}.svg`, tint: false, installed: null };
+  const fb = FALLBACK[key];
+  return list.find((a) => a.key === key) ?? { key, name: fb?.name ?? key, icon: fb?.icon ?? `icons/${key}.svg`, tint: fb?.tint ?? false, installed: null };
 }
 
-// Every agent a role can use: the known agents (Claude Code and Codex even when not
-// reported), the custom models, then, with a role, its own command line.
+// Every agent a role can use: the known agents (the built-in ones even before the list
+// arrives), the custom models, then, with a role, its own command line.
 export function allAgents(list, role = null) {
   const keys = [...new Set([...P.AGENTS, ...list.map((a) => a.key)])];
   return [...keys, ...P.prefs().models.map((m) => `m:${m.id}`), ...(role ? [P.CMD] : [])].map((key) => agentFor(key, list, role));
 }
 // A command line that skips the agent's permission prompts.
-export const riskyCommand = (cmd) => /--dangerously|--yolo|bypass|skip-permissions|--approve-for-me/i.test(cmd ?? "");
+export const riskyCommand = (cmd) => /--dangerously|--yolo|(?:\s|^)-y(?:\s|$)|--approval-mode[=\s]+yolo|bypass|skip-permissions|--approve-for-me/i.test(cmd ?? "");

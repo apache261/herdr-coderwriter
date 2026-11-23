@@ -1,5 +1,5 @@
-// Launch flags: extra command-line flags for Claude Code and Codex when a pair
-// starts them (and, if asked, for the tab bar's + menu via programs.json).
+// Launch flags: extra command-line flags for Claude Code, Codex, Gemini and Antigravity
+// when a pair starts them (and, if asked, for the tab bar's + menu via programs.json).
 // Empty flags = each agent's own default.
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
@@ -23,10 +23,29 @@ export const PRESETS = {
     { id: "ro", label: "Read-only", args: ["--sandbox", "read-only"], group: "perm" },
     { id: "search", label: "Web search", args: ["--search"] },
   ],
+  gemini: [
+    { id: "yolo", label: "YOLO (skip approvals)", args: ["--approval-mode", "yolo"], group: "perm", danger: true },
+    { id: "auto_edit", label: "Auto-edit", args: ["--approval-mode", "auto_edit"], group: "perm" },
+    { id: "plan", label: "Plan mode", args: ["--approval-mode", "plan"], group: "perm" },
+    { id: "sandbox", label: "Sandbox", args: ["--sandbox"] },
+  ],
+  antigravity: [
+    { id: "skip", label: "Skip permissions", args: ["--dangerously-skip-permissions"], group: "perm", danger: true },
+    { id: "accept", label: "Accept edits", args: ["--mode", "accept-edits"], group: "perm" },
+    { id: "auto", label: "Auto mode", args: ["--mode", "auto"], group: "perm" },
+    { id: "plan", label: "Plan mode", args: ["--mode", "plan"], group: "perm" },
+    { id: "sandbox", label: "Sandbox", args: ["--sandbox"] },
+  ],
 };
-const NAMES = { claude: "Claude Code", codex: "Codex" };
-const HINTS = { claude: "more flags, e.g. --model opus --effort high", codex: "more flags, e.g. -m <model> --search" };
-const DANGER = ["--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--allow-dangerously-skip-permissions"];
+const NAMES = { claude: "Claude Code", codex: "Codex", gemini: "Gemini", antigravity: "Antigravity" };
+const TINTED = new Set(["gemini"]);
+const HINTS = {
+  claude: "more flags, e.g. --model opus --effort high",
+  codex: "more flags, e.g. -m <model> --search",
+  gemini: "more flags, e.g. --model pro --sandbox",
+  antigravity: "more flags, e.g. --model gemini-4-neon --effort high",
+};
+const DANGER = ["--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox", "--allow-dangerously-skip-permissions", "--yolo", "-y"];
 
 function indexOfSeq(tokens, seq) {
   outer: for (let i = 0; i + seq.length <= tokens.length; i++) {
@@ -42,7 +61,8 @@ function removeSeq(tokens, seq) {
 }
 
 export function isDangerous(key) {
-  return P.splitArgs(P.prefs().flags[key]).some((a) => DANGER.includes(a) || a === "bypassPermissions");
+  const toks = P.splitArgs(P.prefs().flags[key]);
+  return toks.some((a, i) => DANGER.includes(a) || a === "bypassPermissions" || a === "--approval-mode=yolo" || (a === "--approval-mode" && toks[i + 1] === "yolo"));
 }
 export function customized(key) { return P.splitArgs(P.prefs().flags[key]).length > 0; }
 
@@ -140,7 +160,7 @@ export class Launch {
     };
     return v_flex().gap(7).px(12).py(10)
       .child(h_flex().gap(8).items_center()
-        .child(image(`icons/${key}.svg`).size(15).flex_none())
+        .child(TINTED.has(key) ? svg(`icons/${key}.svg`).size(15).flex_none().text_color(t.foreground) : image(`icons/${key}.svg`).size(15).flex_none())
         .child(div().text_size(12.8).font_semibold().text_color(t.foreground).child(NAMES[key]))
         .child(div().flex_1().text_size(11).text_color(t.dim).child(key === "codex" && pr.models.length ? "also for your custom models" : ""))
         .child(tokens.length
@@ -168,9 +188,11 @@ export class Launch {
   render() {
     const t = theme();
     return v_flex().size_full().bg(t.popover).text_size(12.5).overflow_hidden()
-      .child(div().px(12).pt(10).pb(2).text_size(11).text_color(t.dim).child("Launch flags for new pairs"))
-      .child(this.section(t, "claude"))
-      .child(div().h(1).bg(t.border).mx(12))
-      .child(this.section(t, "codex"));
+      .child(div().flex_none().px(12).pt(10).pb(6).border_b(1).border_color(t.border).text_size(11).text_color(t.dim).child("Launch flags for new pairs"))
+      .child(div().id("launch-scroll").flex_1().min_h(0).overflow_y_scrollbar()
+        .child(v_flex().children(P.AGENTS.flatMap((key, i) => [
+          ...(i ? [div().h(1).bg(t.border).mx(12)] : []),
+          this.section(t, key),
+        ]))));
   }
 }

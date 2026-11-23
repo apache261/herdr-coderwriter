@@ -66,11 +66,13 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
 - **Test files are the tester's**: files are snapshotted after the tester runs, and a coder
   that edits a test gets it back as a finding (the tester is told to check it).
 - **A fresh conversation per subtask**: before each subtask after the first, the coder,
-  tester and reviewer that run Claude Code start a new conversation (`/clear`; Codex and
-  custom models keep theirs, since Codex's `/new` stops at a question in a git repo), so a
-  long plan doesn't run on a context compacted again and again. What survives the clear:
+  tester and reviewer that run Claude Code, Gemini CLI or Antigravity (`agy`) start a new
+  conversation (`/clear`; Codex and custom models keep theirs, since Codex's `/new` stops at
+  a question in a git repo), so a long plan doesn't run on a context compacted again and again.
+  What survives the clear:
   - **their role**: each Claude Code agent of a team starts with its role and standing rules
-    in its system prompt (`--append-system-prompt`), which `/clear` doesn't touch;
+    in its system prompt (`--append-system-prompt`), which `/clear` doesn't touch; Gemini CLI
+    and Antigravity receive their role in each subtask brief;
   - **the earlier subtasks**: when one is approved, coderwriter adds what it changed and the
     coder's notes to `.coderwriter/progress.md`, and the next subtask's briefs point there and
     scope the tester and reviewer to that subtask's own diff.
@@ -104,10 +106,11 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
 - **The bar follows the shown tab**: in a pair's or team's tab it shows only that one's
   status and **Review**, **Feedback**, **Plan**, **Audit**, **Auto**, **Stop**.
 - **Any agent per role, with its own model and effort**: any agent Herdr knows and finds
-  installed (Claude Code, Codex, Copilot, …), a custom model, or **Command** (a command line
-  of your own). For Claude Code each role also has **Model** and **Effort** (Codex: effort),
-  added to its launch with your launch flags. The default, and **Recommended setup** in the
-  dialog, is Claude Code everywhere:
+  installed (Claude Code, Codex, Gemini CLI, Antigravity `agy`, Copilot, …), a custom model,
+  or **Command** (a command line of your own). Each role has per-agent tuning added to its
+  launch with your launch flags: Claude Code and Antigravity (`agy`) take **Model** and
+  **Effort**, Gemini CLI takes **Model**, and Codex takes **Effort**. The default, and
+  **Recommended setup** in the dialog, is Claude Code everywhere:
 
   | Role | Model | Effort | Why |
   |---|---|---|---|
@@ -210,8 +213,10 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
   dialog runs `git rev-parse` and `git status --porcelain` in the folder to say what will happen.
 - Runs `sh` in the pair folder to list `.coderwriter/`, to add `.coderwriter/` to
   `.git/info/exclude`, and to write a team round's combined `review-<n>.md`.
-- The Usage panel runs `python3` to read `~/.claude/projects/**/*.jsonl` and
-  `~/.codex/sessions/**/*.jsonl` (read only, files changed today or since the pair started),
+- The Usage panel runs `python3` to read `~/.claude/projects/**/*.jsonl`,
+  `~/.codex/sessions/**/*.jsonl`, `~/.gemini/tmp/*/chats/session-*.json(l)` and
+  `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl` (read only,
+  files changed today or since the pair started),
   and, at most every 2 minutes, reads the live plan limits the way the agents do: Claude Code's
   `/usage` endpoint (`api.anthropic.com/api/oauth/usage`) with Claude Code's own sign-in from
   `~/.claude/.credentials.json` (macOS: the keychain), read only and never refreshed or sent
@@ -224,8 +229,9 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
   the pair's tab closes. Restoring rewrites the working tree from one (after saving the current
   files as `before-restore`, for Undo); outside a git repo there are no snapshots.
 - Ponytail and Cloudflare skills: runs `sh` to look for each skill's `SKILL.md` in the pair
-  folder's `.claude/skills`, `.agents/skills`, `.codex/skills`, the same under your home
-  folder, and Claude Code's and Codex's plugin caches; the reviewer is told that file's path.
+  folder's `.claude/skills`, `.agents/skills`, `.agent/skills`, `.codex/skills`,
+  `.gemini/skills`, the same under your home folder (`~/.gemini/config/skills` too), and
+  Claude Code's and Codex's plugin caches; the reviewer is told that file's path.
 - The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
   rename something, in the folder you're browsing.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the

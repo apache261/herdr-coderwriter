@@ -1,14 +1,16 @@
-// Token usage: runs usage.py (Claude Code + Codex session logs) and keeps the
-// result in shared("coderwriter.usage"), so the bar's chip and the Usage panel
-// read one scan. The bar polls; the panel can ask for a fresh one.
+// Token usage: runs usage.py (Claude Code, Codex, Gemini and Antigravity session logs)
+// and keeps the result in shared("coderwriter.usage"), so the bar's chip and the Usage
+// panel read one scan. The bar polls; the panel can ask for a fresh one.
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, spaces, panes, focused, exec, readTextFile, appHome, home, shared, setShared, run, layout } from "herdr";
 import * as P from "./pair.js";
+import { known } from "./agents.js";
 
 const I = (name) => `mods/coderwriter/icons/${name}.svg`;
 export const USAGE = "coderwriter.usage";
-const NAMES = { claude: "Claude Code", codex: "Codex" };
+const NAMES = { claude: "Claude Code", codex: "Codex", gemini: "Gemini", antigravity: "Antigravity" };
+const TINTED = new Set(["gemini"]);
 
 let code = null;
 let inflight = false;
@@ -103,10 +105,11 @@ export function openUsagePanel() {
   else { run("layout.select", { stack: "panel-body", child: "usage" }); run("layout.show", { id: "panel" }); }
 }
 
-// The compact chip in the coderwriter bar: today's tokens (+ Codex's 5h limit).
+// The compact chip in the coderwriter bar: today's tokens (+ Claude / Codex limits).
 export function todayTotal(u) {
   const custom = Object.values(u?.today_providers ?? {}).reduce((n, tok) => n + (tok?.total ?? 0), 0);
-  return (u?.today?.claude?.total ?? 0) + (u?.today?.codex?.total ?? 0) + custom;
+  const agents = Object.values(u?.today ?? {}).reduce((n, tok) => n + (tok?.total ?? 0), 0);
+  return agents + custom;
 }
 
 export function usageChip(t) {
@@ -170,7 +173,10 @@ export class Usage {
       const m = prov?.startsWith("cw_") ? P.customModel(`m:${prov.slice(3)}`) : null;
       return m ? (m.name || m.model) : prov?.startsWith("cw_") ? "Removed custom model" : `Codex · ${prov}`;
     };
-    const icon = (key, prov) => prov && prov !== "openai" ? svg(I("cpu")).size(14).flex_none().text_color(t.accent) : image(`icons/${key}.svg`).size(14).flex_none();
+    const icon = (key, prov) => prov && prov !== "openai"
+      ? svg(I("cpu")).size(14).flex_none().text_color(t.accent)
+      : TINTED.has(key) ? svg(`icons/${key}.svg`).size(14).flex_none().text_color(t.foreground)
+      : image(`icons/${key}.svg`).size(14).flex_none();
     const agentRow = (key, tok, prov) => this.card(t, [
       h_flex().gap(8).items_center()
         .child(icon(key, prov))
@@ -238,6 +244,8 @@ export class Usage {
     const codexLimits = u?.limits?.codex;
     const hasLimits = Boolean(codexLimits?.primary?.used != null || codexLimits?.secondary?.used != null);
     const providers = Object.entries(u?.today_providers ?? {}).filter(([, tok]) => (tok?.total ?? 0) > 0);
+    const installed = new Set(known(sc.on).filter((a) => a.installed).map((a) => a.key));
+    const todayKeys = P.AGENTS.filter((k) => k === "claude" || k === "codex" || installed.has(k) || (u?.today?.[k]?.total ?? 0) > 0);
 
     return v_flex().size_full().min_w(0).bg(t.background).rounded(10).border_1().border_color(t.border).overflow_hidden()
       .child(v_flex().flex_none().gap(3).px(12).pt(10).pb(8).border_b(1).border_color(t.border)
@@ -254,10 +262,9 @@ export class Usage {
         .child(v_flex().gap(8).p(10)
           .child(this.title(t, scopeLabel.toUpperCase(), sessions.length ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}` : null))
           .children(sessions.length ? sessions.map(sessionRow)
-            : [div().px(2).text_size(11.8).text_color(t.dim).child(stale ? "Loading…" : "No Claude Code or Codex activity here yet.")])
+            : [div().px(2).text_size(11.8).text_color(t.dim).child(stale ? "Loading…" : "No agent activity here yet.")])
           .child(this.title(t, "TODAY · ALL FOLDERS", u ? fmt(todayTotal(u)) : null))
-          .child(agentRow("claude", u?.today?.claude))
-          .child(agentRow("codex", u?.today?.codex))
+          .children(todayKeys.map((k) => agentRow(k, u?.today?.[k])))
           .children(providers.map(([prov, tok]) => agentRow("codex", tok, prov)))
           .when(Boolean(claude && claude.status !== "not_installed"), (el) => el
             .child(this.title(t, `CLAUDE PLAN LIMITS${claude?.plan ? " · " + String(claude.plan).toUpperCase() : ""}`,
