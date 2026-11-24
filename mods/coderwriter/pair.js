@@ -74,7 +74,8 @@ export const CMD = "cmd";
 export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
-  const p = { writer: "claude", reviewer: "claude", max: 3, auto: false, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...(shared(PREFS) ?? {}) };
+  const raw = shared(PREFS) ?? {};
+  const p = { writer: "claude", reviewer: "claude", max: 3, auto: true, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...raw, ...(raw.autoDefault ? {} : { auto: true }) };
   p.flags = { claude: "", codex: "", gemini: "", antigravity: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, gemini: false, antigravity: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -168,7 +169,7 @@ export function launchArgv(agent, role = null) {
   const extra = splitArgs(prefs().flags[agent.key] ?? "");
   return [...base, ...extra, ...tuneArgs(agent.key, role, extra)];
 }
-export function setPrefs(patch) { setShared(PREFS, { ...prefs(), ...patch }); }
+export function setPrefs(patch) { setShared(PREFS, { ...prefs(), autoDefault: 1, ...patch }); }
 
 export function pairs() { return shared(PAIRS) ?? {}; }
 export function pair(tab) { return pairs()[tab] ?? null; }

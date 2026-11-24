@@ -19,7 +19,7 @@ your working copy is never touched.
 ## Pair
 
 - Writer and reviewer side by side, each pane marked `WRITER` / `REVIEWER` with a live status.
-- **Review →**, **← Feedback**, or **Auto** for hands-off rounds (1–10, default 3).
+- **Review →**, **← Feedback**, or **Auto** (on by default) for hands-off rounds (1–10, default 3).
 - **Test gate**: a test command per folder (`npm test`, `pytest -q`, …) runs before every
   review. A failure goes back to the writer instead of the reviewer; Auto tries 3 times, then
   pauses.
