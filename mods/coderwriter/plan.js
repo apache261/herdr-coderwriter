@@ -65,6 +65,7 @@ export class Plan {
       : 'No subtasks found: they are "## 1. Title" headings. Ask the PM to fix it.';
     const canApprove = Boolean(p) && !running && !p?.plan?.done && tasks.length > 0;
     const canRevise = Boolean(p) && !running && !p?.plan?.done && this.input.value().trim().length > 0;
+    const canNudge = Boolean(p) && !running && !p?.plan?.done && tasks.length === 0;
 
     return v_flex().size_full().bg(t.popover).text_size(12.5).text_color(t.foreground)
       .child(v_flex().flex_none().gap(4).px(18).pt(16).pb(10).border_b(1).border_color(t.border)
@@ -82,6 +83,7 @@ export class Plan {
       .child(h_flex().flex_none().gap(8).px(18).py(12).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(`You can also edit ${P.PLAN} yourself · Esc closes`))
         .child(this.button(t, "plan-close", "Close", () => closeOverlay(props().overlay)))
+        .when(canNudge, (el) => el.child(this.button(t, "plan-nudge", "Tell PM to write plan", () => this.send("nudge"), { icon: "list" })))
         .child(this.button(t, "plan-approve", "Approve & start", () => this.send("approve"), { primary: true, enabled: canApprove, icon: "play" })));
   }
 }

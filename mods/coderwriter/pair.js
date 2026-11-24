@@ -639,6 +639,12 @@ const CLEARED = ` Your conversation is cleared before each new subtask of the PM
   `it are already in this folder, uncommitted, and ${PROGRESS} says what each one changed: read it when a message points you there.`;
 const ALWAYS = " Always: finish the whole job in one turn (wait for your own sub-agents and background commands), write your file " +
   "where the message says, never commit, and never wait for a person to tell you to go on.";
+const PM_RULES = `You NEVER write code, edit project files, or spawn subagents, background agents, workflows, or swarms to execute work. ` +
+  `You may only edit ${PLAN} (when planning) and ${REPORT} (when reporting). ` +
+  `Your ONLY way to delegate work is writing ${PLAN} and stopping: coderwriter detects ${PLAN}, opens the Plan dialog for the user to approve, ` +
+  `and hands each subtask to the separate CODER, TESTER, and REVIEWER panes. ` +
+  `If the user says "go ahead", "start", "proceed", or "implement it" in your pane, do NOT implement anything or spawn agents—write or update ` +
+  `${PLAN}, stop, and tell them to click "Approve & start" in the Plan dialog.`;
 export const CHARTERS = {
   writer: `You are the CODER in ${TEAM} You make the changes in this folder and leave them uncommitted. Test files belong to the ` +
     `tester: never edit them; if one is wrong, say why in ${CODER_NOTES}. After every turn write to ${CODER_NOTES} what you ` +
@@ -648,12 +654,51 @@ export const CHARTERS = {
     `subtasks stay and must keep passing.` + ALWAYS + CLEARED,
   reviewer: `You are the REVIEWER in ${TEAM} Each round you check the coder's uncommitted change, one message for quality and ` +
     `one for security. Never edit project files. Review the current subtask's change: earlier subtasks were approved already.` + ALWAYS + CLEARED,
-  pm: `You are the PM in ${TEAM} You plan (${PLAN}) and, when everything is approved, report (${REPORT}). You never write code or tests.`,
+  pm: `You are the PM in ${TEAM} You plan (${PLAN}) and, when everything is approved, report (${REPORT}). ${PM_RULES}`,
   docs: `You are the DOCS WRITER in ${TEAM} Once the work is approved you update the documentation to match it. ` +
     `Edit documentation only, never code or tests.` + ALWAYS,
 };
-export function charterArgs(key, role) {
-  return key === "claude" && CHARTERS[role] ? ["--append-system-prompt", CHARTERS[role]] : [];
+// Antigravity (agy) loads custom agents from ~/.gemini/config/agents/<name>/agent.md.
+// For the PM role, an explicit tool allowlist removes invoke_subagent / define_subagent /
+// swarm / run_workflow while keeping file, command, web and question tools, and puts
+// CHARTERS.pm in its persistent system prompt.
+const AGY_PM_AGENT = "coderwriter-pm";
+const AGY_PM_MD = [
+  "---",
+  `name: ${AGY_PM_AGENT}`,
+  "description: Coderwriter team PM (planner and reporter only; never writes code or spawns subagents).",
+  "tools:",
+  "  - read_file",
+  "  - write_file",
+  "  - edit_file",
+  "  - run_command",
+  "  - search_web",
+  "  - ask_question",
+  "mainAgent: true",
+  "subagent: false",
+  "---",
+  "",
+  CHARTERS.pm,
+  "",
+].join("\n");
+async function ensureAgyPmAgent(machine) {
+  const script = 'dir="$HOME/.gemini/config/agents/$1"; mkdir -p "$dir" && printf "%s" "$2" > "$dir/agent.md"';
+  const r = await exec("sh", ["-c", script, "sh", AGY_PM_AGENT, AGY_PM_MD], { timeout: 10000, ...(machine ? { on: machine } : {}) }).catch(() => null);
+  return r?.code === 0;
+}
+export function charterArgs(key, role, opts = {}) {
+  const charter = CHARTERS[role];
+  if (!charter) return [];
+  if (key === "claude") {
+    return ["--append-system-prompt", charter, ...(role === "pm" ? ["--disallowedTools", "Agent,Task"] : [])];
+  }
+  if (key === "codex" || isCustom(key)) {
+    return ["-c", `developer_instructions=${toml(charter)}`, ...(role === "pm" ? ["-c", "features.multi_agent=false"] : [])];
+  }
+  if (key === "antigravity" && role === "pm" && opts.agyPmAgent && !flagValue(splitArgs(prefs().flags.antigravity ?? ""), ["--agent"])) {
+    return ["--agent", AGY_PM_AGENT];
+  }
+  return [];
 }
 
 // The current subtask of a running plan after the first, for briefs to agents cleared
@@ -713,19 +758,30 @@ async function logProgress(tab) {
 }
 export function pmBrief(task) {
   return `You are the PM (project manager) of a small team in this folder: a CODER writes the code, a TESTER writes and runs the tests, ` +
-    `and a REVIEWER checks quality and security. You plan and report; you don't write code or tests. ` +
-    (task ? `The user's task: ${task}\n\n` : `The user will give you the task here. `) +
+    `and a REVIEWER checks quality and security. You plan and report ONLY; ${PM_RULES} ` +
+    (task ? `\n\nThe user's task: ${task}\n\n` : `\n\nThe user will give you the task here. `) +
     `Read enough of the repository to plan it (README, layout, the code the task touches). If something important is unclear, ` +
-    `ask the user here and wait for the answer. Then write the plan to ${PLAN}: a one-line goal, then the subtasks in the order ` +
+    `ask the user here and wait for the answer—keep planning focused and write an initial ${PLAN} as soon as requirements are clear ` +
+    `rather than letting the chat grow long. Write the plan to ${PLAN}: a one-line goal, then the subtasks in the order ` +
     `to do them, each as a heading "## <n>. <title>" followed by "Do:" (what to change, where), "Done when:" (what must be true) ` +
     `and "Tests:" (what the tester should check). Use as few subtasks as the task needs (one is fine for a small task), each small ` +
     `enough for one coder to finish and get reviewed. The user approves the plan before anyone starts. Then stop.`;
 }
 const reviseBrief = (text) => `The user wants changes to the plan: ${text}\n\nRewrite ${PLAN} in the same format ` +
-  `(ask here first if something is unclear). Then stop.`;
+  `(ask here first only if something important is still unclear). Reminder: you are the PM (planner only)—do NOT write code, ` +
+  `edit project files, or spawn subagents/workers; writing ${PLAN} and stopping is the hand-off. Then stop.`;
+const nudgePlanBrief = () => `Hand off the task now by writing ${PLAN} in the required format (a one-line goal, then ` +
+  `"## <n>. <title>" subtasks with "Do:", "Done when:", and "Tests:"). Reminder: you are the PM (planner only)—do NOT write code, ` +
+  `edit project files, or spawn subagents/workers. Writing ${PLAN} and stopping is how coderwriter delegates the subtasks to the ` +
+  `separate CODER, TESTER, and REVIEWER panes once the user clicks "Approve & start". Write ${PLAN} now, then stop.`;
+const pmGuardBrief = (files) => `STOP: You (or a subagent you spawned) modified project files outside ${REVIEW_DIR}/: ${files.join(", ")}. ` +
+  `As the PM, you NEVER write code, edit project files, or spawn subagents/workers to implement work—the separate CODER pane does that ` +
+  `after the user approves ${PLAN}. Cancel any subagents you started, revert those project file edits back to how they started (do not ` +
+  `touch ${REVIEW_DIR}/), then write only ${PLAN} (if ready) and stop.`;
 function reportBrief(p) {
   const n = p.plan.tasks.length;
-  return `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security)` +
+  return `You are the PM (planner and reporter only; do NOT edit code or spawn subagents). ` +
+    `All ${n} subtask${n === 1 ? "" : "s"} of ${PLAN} passed the team's checks (tester, test command, quality, security)` +
     (n > 1 ? `, one by one and then together in a final check of the whole change. ` : ". ") +
     (roleOf(p, "docs") ? `The docs writer updated the documentation (see ${DOCS}). ` : "") +
     `Write a short report for the user to ${REPORT}: for each subtask what was done (see ${PROGRESS}, the reports in ` +
@@ -753,17 +809,64 @@ async function readPlan(p) {
   try { return await readTextFile(join(p.folder, PLAN), where(p)); } catch { return null; }
 }
 
+// Files outside .coderwriter/ that differ from a snapshot sha (including untracked files),
+// without touching the real git index or creating refs. Used to catch a PM that drifts
+// into editing project files or spawning a subagent to code.
+const DIFF_OUTSIDE = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0; ' +
+  'idx=$(mktemp) || exit 1; trap \'rm -f "$idx"\' EXIT; ' +
+  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp "$real" "$idx" || rm -f "$idx"; ' +
+  'GIT_INDEX_FILE="$idx" git add -A :/ >/dev/null 2>&1 || exit 1; ' +
+  'GIT_INDEX_FILE="$idx" git diff --cached --name-only "$1" -- . ":(exclude)$2"';
+async function pmTouchedFiles(p, base) {
+  if (!base) return [];
+  const r = await sh(p, DIFF_OUTSIDE, [base, REVIEW_DIR]).catch(() => null);
+  return (r?.stdout ?? "").split("\n").filter(Boolean);
+}
+
 // Wait until the PM has written (or rewritten) the plan and finished its turn. A turn that
 // ends without one means it asked you something: say so, and keep waiting for your answer.
+// Whenever the PM settles, also verify it didn't touch project files outside .coderwriter/.
 async function waitPlan(tab, g, before) {
-  let told = false;
+  let told = false, checkedIdle = false, corrections = 0, warnedSig = "";
+  const base = pair(tab)?.checkpoints?.[0] ?? null;
   for (;;) {
     if (gen[tab] !== g) throw new Cancelled();
     const p = pair(tab), pm = roleOf(p, "pm");
     const s = status(pm.t);
     if (s.state === "gone" || s.state === "finished") throw new Error("The PM exited");
-    const text = s.status === "working" ? null : await readPlan(p);
-    if (text != null && text !== before) {
+    if (s.status === "working") {
+      checkedIdle = false;
+      await sleep(2000);
+      continue;
+    }
+    const text = await readPlan(p);
+    const planChanged = text != null && text !== before;
+    if ((!checkedIdle || planChanged) && base) {
+      checkedIdle = true;
+      const touched = await pmTouchedFiles(p, base);
+      if (gen[tab] !== g) throw new Cancelled();
+      if (touched.length) {
+        const sig = touched.join(",");
+        const shown = touched.slice(0, 4).join(", ") + (touched.length > 4 ? `, +${touched.length - 4} more` : "");
+        if (corrections < 2 && sig !== warnedSig) {
+          corrections++;
+          warnedSig = sig;
+          update(tab, { note: `PM edited project files (${shown}): reminding it to revert and only plan` });
+          notify({ title: "coderwriter: the PM edited project files",
+            body: `The PM should only write ${PLAN}, not edit code (${shown}). Asking it to revert.`,
+            level: "warning", action: { name: "tab.select", args: { id: tab } } });
+          await say(tab, g, pm.t, "pm", pmGuardBrief(touched));
+          checkedIdle = false;
+          continue;
+        } else if (sig !== warnedSig) {
+          warnedSig = sig;
+          notify({ title: "coderwriter: PM left project files changed",
+            body: `Project files changed during planning (${shown}). Restore round 0 in Reviews before approving.`,
+            level: "warning", action: { name: "tab.select", args: { id: tab } } });
+        }
+      }
+    }
+    if (planChanged) {
       const tasks = planTasks(text);
       update(tab, { phase: "plan_ready", plan: { tasks, at: 0, approved: false, done: false },
         note: tasks.length ? `Plan ready: ${tasks.length} subtask${tasks.length === 1 ? "" : "s"}, approve it to start` : "The plan has no \"## 1. Title\" subtasks: ask the PM to fix it" });
@@ -773,7 +876,7 @@ async function waitPlan(tab, g, before) {
     }
     if (!told && ["idle", "done", "blocked", "error"].includes(s.status)) {
       told = true;
-      update(tab, { note: "The PM has a question: answer it in the PM pane" });
+      update(tab, { note: "The PM is waiting in its pane (answer it, or open Plan to nudge hand-off)" });
       notify({ title: "coderwriter: the PM asks", body: "Answer the PM in its pane; the plan follows", level: "info", action: { name: "tab.select", args: { id: tab } } });
     }
     await sleep(2000);
@@ -862,9 +965,19 @@ async function afterApproval(tab, g) {
       `(rounds ${(p.taskStart ?? 0) + 1}–${p.round}).\n\n`]).catch(() => null);
   }
   await writeDocs(tab, g);
+  const pm = roleOf(pair(tab), "pm");
+  const beforeReport = await snapshot(pair(tab), "before-report", "coderwriter: before the PM report");
+  update(tab, { phase: "reporting", note: "All subtasks approved: clearing the PM for the final report" });
+  await fresh(tab, g, pm, "pm");
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
-  await say(tab, g, roleOf(p, "pm").t, "pm", reportBrief(p));
-  await remind(tab, g, roleOf(p, "pm").t, "pm", REPORT, () => exists(pair(tab), REPORT), (ok) => !ok);
+  await say(tab, g, pm.t, "pm", reportBrief(pair(tab)));
+  await remind(tab, g, pm.t, "pm", REPORT, () => exists(pair(tab), REPORT), (ok) => !ok);
+  const pmEdited = await pmTouchedFiles(pair(tab), beforeReport);
+  if (pmEdited.length) {
+    notify({ title: "coderwriter: the PM edited project files",
+      body: `During reporting, the PM changed: ${pmEdited.join(", ")}. Check them before you commit.`,
+      level: "warning", action: { name: "tab.select", args: { id: tab } } });
+  }
   update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
   notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.${worktreeNote(p)}`,
     level: "success", action: { name: "tab.select", args: { id: tab } } });
@@ -899,6 +1012,17 @@ export function revisePlan(tab, text) {
     const before = await readPlan(p);
     update(tab, { phase: "planning", note: "The PM is changing the plan" });
     await say(tab, g, roleOf(p, "pm").t, "pm", reviseBrief(text));
+    await waitPlan(tab, g, before);
+  });
+}
+export function nudgePlan(tab) {
+  interruptWait(tab);
+  return job(tab, async (g) => {
+    const p = pair(tab);
+    if (planRunning(p)) throw new Error("The plan is already running");
+    const before = await readPlan(p);
+    update(tab, { phase: "planning", note: "Reminding the PM to write the plan and hand off" });
+    await say(tab, g, roleOf(p, "pm").t, "pm", nudgePlanBrief());
     await waitPlan(tab, g, before);
   });
 }
@@ -1264,6 +1388,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const tab = machine ? `${machine}/${raw}` : raw;
   folder = folder || space.folder || home();
   await excludeReviews(folder, machine);
+  const agyPmAgent = team && pm?.key === "antigravity" ? await ensureAgyPmAgent(machine) : false;
   // inTab: labelled into the new tab, which the app lays out side by side; a team's other
   // agents start without a pane and arrangeTeam() places them.
   const launch = async (role, agent, inTab = true) => {
@@ -1271,7 +1396,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     if (machine) args.push("--on", machine);
     if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
     args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent, role),
-      ...(team ? charterArgs(agent.key, role) : []));
+      ...(team ? charterArgs(agent.key, role, { agyPmAgent }) : []));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
     return r.address;

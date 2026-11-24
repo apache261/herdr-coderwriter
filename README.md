@@ -40,8 +40,12 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
 
 - **PM** reads the repository, asks you what's unclear in its pane, and writes
   `.coderwriter/plan.md`: subtasks with *Do*, *Done when* and *Tests*. The Plan dialog shows
-  it: ask the PM for changes, or **Approve & start**. The PM plans and reports; coderwriter
-  itself does the hand-offs, so a confused agent can't derail them.
+  it: ask the PM for changes, nudge it to write the plan if a long discussion hasn't produced
+  one yet, or **Approve & start**. The PM plans and reports; coderwriter itself does the
+  hand-offs, disables subagent spawning on the PM where the agent supports it (Claude Code
+  `--disallowedTools Agent,Task`, Codex `-c features.multi_agent=false`, Antigravity's
+  `coderwriter-pm` agent tool allowlist), watches for stray edits outside `.coderwriter/` and
+  tells the PM to revert them, and clears the PM's conversation before the final report.
 - **Checked against the plan**: the tester and the quality check get the subtask as the PM
   wrote it, so the tester covers its *Tests* and both check that its *Done when* holds.
 - **Every check runs every round**, even when one fails, and all failures go to the coder in
@@ -70,9 +74,11 @@ You ─task─▶ PM ─(asks you if unclear)─▶ plan ─▶ you approve
   conversation (`/clear`; Codex and custom models keep theirs, since Codex's `/new` stops at
   a question in a git repo), so a long plan doesn't run on a context compacted again and again.
   What survives the clear:
-  - **their role**: each Claude Code agent of a team starts with its role and standing rules
-    in its system prompt (`--append-system-prompt`), which `/clear` doesn't touch; Gemini CLI
-    and Antigravity receive their role in each subtask brief;
+  - **their role**: each team agent keeps its role and standing rules in its system prompt
+    where supported: Claude Code (`--append-system-prompt`, which `/clear` doesn't touch),
+    Codex and custom models (`-c developer_instructions=…`), and Antigravity's PM
+    (`--agent coderwriter-pm`); Gemini CLI and other Antigravity roles receive their role in
+    each subtask brief;
   - **the earlier subtasks**: when one is approved, coderwriter adds what it changed and the
     coder's notes to `.coderwriter/progress.md`, and the next subtask's briefs point there and
     scope the tester and reviewer to that subtask's own diff.
@@ -235,7 +241,8 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
 - The Files panel runs `sh` (`mkdir -p`, `mv`, creating an empty file) only when you create or
   rename something, in the folder you're browsing.
 - Writes `~/.config/herdr-app/programs.json` only if you check "Also use these flags for the
-  tab bar's + menu".
+  tab bar's + menu", and `~/.gemini/config/agents/coderwriter-pm/agent.md` when starting a
+  team with Antigravity (`agy`) as PM.
 - Custom models: **Test** sends `GET <base>/models` and one tiny `POST <base>/responses`
   (and `/chat/completions` if that fails) to the endpoint you enter. A pasted API key is
   saved only in `~/.config/coderwriter/keys/<id>.key` (folder 700, file 600), never in Herdr's

@@ -36,7 +36,9 @@ class Bar {
         else if (c === "newpair") { const req = shared(NEW_PAIR); setShared(NEW_PAIR, null); if (req) this.start(cx, req); }
         else if (c === "plan") {
           const req = shared(PLAN_REQ); setShared(PLAN_REQ, null);
-          if (req?.action === "approve") P.approvePlan(req.tab); else if (req?.action === "revise") P.revisePlan(req.tab, req.text);
+          if (req?.action === "approve") P.approvePlan(req.tab);
+          else if (req?.action === "revise") P.revisePlan(req.tab, req.text);
+          else if (req?.action === "nudge") P.nudgePlan(req.tab);
         }
         else if (c === "audit") { const req = shared(AUDIT_REQ); setShared(AUDIT_REQ, null); if (req) P.audit(req.tab, req.kinds); }
         else if (c === "team") { P.setPrefs({ team: !P.prefs().team }); notify({ title: "coderwriter", body: `Team mode ${P.prefs().team ? "on" : "off"} for the next pair`, level: "info" }); }
