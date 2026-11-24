@@ -424,7 +424,8 @@ export function feedbackBrief(p) {
       `Fix the code, not the tests: test files are the tester's; if a test is wrong, say why in ${CODER_NOTES}. ` +
       `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.${FINISH}`;
   }
-  return restoredNote(p) + `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
+  return restoredNote(p) + `You are the WRITER in a writer/reviewer pair${taskText(p) ? `; your task: ${taskText(p)}` : ""}. ` +
+    `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
     `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.${FINISH}`;
 }
 
@@ -593,15 +594,23 @@ async function teamRound(tab, g) {
   const results = touched.length ? [{ id: "guard", state: "fail", file: null,
     text: `1. You changed test files, which are the tester's: ${touched.join(", ")}. Put them back and fix the code instead; ` +
       `if a test is wrong, say why in ${CODER_NOTES} and the tester will look at it.` }] : [];
+  let beforeReviewer = p.checkpoints?.[round] ?? null;
   for (const id of ids) {
     update(tab, { stage: id, note: `Round ${round}: ${STAGES[id].name}` });
     const r = STAGES[id].run ? await STAGES[id].run(tab, g, round) : await agentStage(tab, g, round, id, found);
     if (gen[tab] !== g) throw new Cancelled();
+    if (STAGES[id].role === "reviewer") {
+      const still = await guardReviewerEdits(tab, g, beforeReviewer, round);
+      if (still.length) beforeReviewer = (await snapshot(pair(tab), `round-${round}-${id}-dirty`, `coderwriter: after ${id}`)) ?? beforeReviewer;
+    }
     results.push({ id, ...r });
     update(tab, { stageResults: { ...(pair(tab).stageResults ?? {}), [id]: r.state } });
     if (id === "tester") {
       const sha = await snapshot(pair(tab), `round-${round}-tested`, `coderwriter: round ${round} after the tester`);
-      if (sha) update(tab, { tested: { ...(pair(tab).tested ?? {}), [round]: sha } });
+      if (sha) {
+        update(tab, { tested: { ...(pair(tab).tested ?? {}), [round]: sha } });
+        beforeReviewer = sha;
+      }
     }
   }
   const file = `${REVIEW_DIR}/review-${round}.md`;
@@ -645,6 +654,15 @@ const PM_RULES = `You NEVER write code, edit project files, or spawn subagents, 
   `and hands each subtask to the separate CODER, TESTER, and REVIEWER panes. ` +
   `If the user says "go ahead", "start", "proceed", or "implement it" in your pane, do NOT implement anything or spawn agents—write or update ` +
   `${PLAN}, stop, and tell them to click "Approve & start" in the Plan dialog.`;
+const PAIR = "a coderwriter writer/reviewer pair working in this folder: a WRITER makes the changes and leaves them uncommitted, " +
+  `and a REVIEWER checks them each round and writes its verdict and findings to ${REVIEW_DIR}/review-<n>.md. ` +
+  "coderwriter, a program, hands the work between you.";
+export const PAIR_CHARTERS = {
+  writer: `You are the WRITER in ${PAIR} You make the changes in this folder and leave them uncommitted. ` +
+    `After each review, read ${REVIEW_DIR}/review-<n>.md and address its findings.` + ALWAYS,
+  reviewer: `You are the REVIEWER in ${PAIR} Each round you review the writer's uncommitted changes and write your verdict and ` +
+    `numbered findings to ${REVIEW_DIR}/review-<n>.md. You NEVER edit project files (you may only write inside ${REVIEW_DIR}/).` + ALWAYS,
+};
 export const CHARTERS = {
   writer: `You are the CODER in ${TEAM} You make the changes in this folder and leave them uncommitted. Test files belong to the ` +
     `tester: never edit them; if one is wrong, say why in ${CODER_NOTES}. After every turn write to ${CODER_NOTES} what you ` +
@@ -687,15 +705,16 @@ async function ensureAgyPmAgent(machine) {
   return r?.code === 0;
 }
 export function charterArgs(key, role, opts = {}) {
-  const charter = CHARTERS[role];
+  const team = opts.team ?? true;
+  const charter = (team ? CHARTERS : PAIR_CHARTERS)[role];
   if (!charter) return [];
   if (key === "claude") {
-    return ["--append-system-prompt", charter, ...(role === "pm" ? ["--disallowedTools", "Agent,Task"] : [])];
+    return ["--append-system-prompt", charter, ...(team && role === "pm" ? ["--disallowedTools", "Agent,Task"] : [])];
   }
   if (key === "codex" || isCustom(key)) {
-    return ["-c", `developer_instructions=${toml(charter)}`, ...(role === "pm" ? ["-c", "features.multi_agent=false"] : [])];
+    return ["-c", `developer_instructions=${toml(charter)}`, ...(team && role === "pm" ? ["-c", "features.multi_agent=false"] : [])];
   }
-  if (key === "antigravity" && role === "pm" && opts.agyPmAgent && !flagValue(splitArgs(prefs().flags.antigravity ?? ""), ["--agent"])) {
+  if (team && key === "antigravity" && role === "pm" && opts.agyPmAgent && !flagValue(splitArgs(prefs().flags.antigravity ?? ""), ["--agent"])) {
     return ["--agent", AGY_PM_AGENT];
   }
   return [];
@@ -809,18 +828,44 @@ async function readPlan(p) {
   try { return await readTextFile(join(p.folder, PLAN), where(p)); } catch { return null; }
 }
 
+const reviewerGuardBrief = (files) => `STOP: You modified project files outside ${REVIEW_DIR}/: ${files.join(", ")}. ` +
+  `As the REVIEWER, you NEVER edit project files—only the writer does. Revert those project file edits back to how they were ` +
+  `before your review (do not touch ${REVIEW_DIR}/), then stop.${FINISH}`;
+
 // Files outside .coderwriter/ that differ from a snapshot sha (including untracked files),
-// without touching the real git index or creating refs. Used to catch a PM that drifts
-// into editing project files or spawning a subagent to code.
+// without touching the real git index or creating refs. Used to catch a PM or reviewer
+// that drifts into editing project files.
 const DIFF_OUTSIDE = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0; ' +
   'idx=$(mktemp) || exit 1; trap \'rm -f "$idx"\' EXIT; ' +
   'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp "$real" "$idx" || rm -f "$idx"; ' +
   'GIT_INDEX_FILE="$idx" git add -A :/ >/dev/null 2>&1 || exit 1; ' +
   'GIT_INDEX_FILE="$idx" git diff --cached --name-only "$1" -- . ":(exclude)$2"';
-async function pmTouchedFiles(p, base) {
+async function touchedFiles(p, base) {
   if (!base) return [];
   const r = await sh(p, DIFF_OUTSIDE, [base, REVIEW_DIR]).catch(() => null);
   return (r?.stdout ?? "").split("\n").filter(Boolean);
+}
+async function guardReviewerEdits(tab, g, before, round) {
+  if (!before) return [];
+  const p = pair(tab);
+  const edited = await touchedFiles(p, before);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!edited.length) return [];
+  const shown = edited.slice(0, 4).join(", ") + (edited.length > 4 ? `, +${edited.length - 4} more` : "");
+  update(tab, { note: `Round ${round}: reviewer edited project files (${shown}): asking it to revert` });
+  notify({ title: "coderwriter: the reviewer edited project files",
+    body: `The reviewer should not edit project files (${shown}). Asking it to revert.`,
+    level: "warning", action: { name: "tab.select", args: { id: tab } } });
+  await say(tab, g, p.reviewer.t, "reviewer", reviewerGuardBrief(edited));
+  const still = await touchedFiles(pair(tab), before);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (still.length) {
+    const left = still.slice(0, 4).join(", ") + (still.length > 4 ? `, +${still.length - 4} more` : "");
+    notify({ title: "coderwriter: reviewer left project files changed",
+      body: `The reviewer left changes in: ${left}. Restore round ${round} in Reviews if needed.`,
+      level: "warning", action: { name: "tab.select", args: { id: tab } } });
+  }
+  return still;
 }
 
 // Wait until the PM has written (or rewritten) the plan and finished its turn. A turn that
@@ -843,7 +888,7 @@ async function waitPlan(tab, g, before) {
     const planChanged = text != null && text !== before;
     if ((!checkedIdle || planChanged) && base) {
       checkedIdle = true;
-      const touched = await pmTouchedFiles(p, base);
+      const touched = await touchedFiles(p, base);
       if (gen[tab] !== g) throw new Cancelled();
       if (touched.length) {
         const sig = touched.join(",");
@@ -972,7 +1017,7 @@ async function afterApproval(tab, g) {
   update(tab, { phase: "reporting", note: "All subtasks approved: the PM is writing the report" });
   await say(tab, g, pm.t, "pm", reportBrief(pair(tab)));
   await remind(tab, g, pm.t, "pm", REPORT, () => exists(pair(tab), REPORT), (ok) => !ok);
-  const pmEdited = await pmTouchedFiles(pair(tab), beforeReport);
+  const pmEdited = await touchedFiles(pair(tab), beforeReport);
   if (pmEdited.length) {
     notify({ title: "coderwriter: the PM edited project files",
       body: `During reporting, the PM changed: ${pmEdited.join(", ")}. Check them before you commit.`,
@@ -1083,9 +1128,11 @@ async function runTests(tab, round) {
 
 export function testsBrief(p) {
   const t = p.tests ?? {};
-  return restoredNote(p) + `The test command \`${t.cmd}\` fails${t.error ? ` (${t.error})` : ` with exit code ${t.code}`}. ` +
+  const role = p.kind === "team" ? "CODER in a team" : "WRITER in a writer/reviewer pair";
+  return restoredNote(p) + `You are the ${role}${taskText(p) ? `; your task: ${taskText(p)}` : ""}. ` +
+    `The test command \`${t.cmd}\` fails${t.error ? ` (${t.error})` : ` with exit code ${t.code}`}. ` +
     `Its output is in ${t.file}. Fix the code so the tests pass. Don't skip or weaken tests to get there; ` +
-    `if a test itself is wrong, fix it and say why. Keep the changes uncommitted.`;
+    `if a test itself is wrong, fix it and say why. Keep the changes uncommitted.${FINISH}`;
 }
 
 // ---- checkpoints ----------------------------------------------------------------
@@ -1197,6 +1244,7 @@ async function reviewRound(tab, g, kinds = null) {
   await say(tab, g, p.reviewer.t, "reviewer", kinds ? auditBrief(p, round, kinds, found) : reviewBrief(p, round, lens));
   const v = await remind(tab, g, p.reviewer.t, "reviewer", `${REVIEW_DIR}/review-${round}.md`, () => verdictOf(pair(tab), round),
     (r) => r.verdict === "missing" || r.verdict === "unknown", ["APPROVED", "CHANGES_REQUESTED"]);
+  await guardReviewerEdits(tab, g, p.checkpoints?.[round] ?? null, round);
   let repeats = [];
   if (v.verdict === "changes" && round > 1) {
     const before = await verdictOf(pair(tab), round - 1);
@@ -1396,7 +1444,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     if (machine) args.push("--on", machine);
     if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
     args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent, role),
-      ...(team ? charterArgs(agent.key, role, { agyPmAgent }) : []));
+      ...charterArgs(agent.key, role, { team, agyPmAgent }));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
     return r.address;

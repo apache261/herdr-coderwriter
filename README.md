@@ -26,6 +26,11 @@ your working copy is never touched.
 - **Ponytail review** (optional): the reviewer follows
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.
+- **Role persistence & reviewer guard**: writer and reviewer keep their role in a persistent
+  system prompt where supported (Claude Code `--append-system-prompt`, Codex and custom models
+  `-c developer_instructions=…`), every feedback and test-fix brief restates the role, and
+  coderwriter watches for stray project-file edits by the reviewer outside `.coderwriter/` and
+  asks it to revert them.
 
 ## Team (preview)
 
