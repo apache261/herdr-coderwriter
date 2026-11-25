@@ -246,7 +246,7 @@ export function isBusy(tab) { return Boolean(busy[tab]); }
 export function stop(tab) {
   gen[tab] = (gen[tab] ?? 0) + 1;
   busy[tab] = false;
-  update(tab, { auto: false, phase: "stopped", note: "Stopped" });
+  update(tab, { auto: false, phase: "stopped", pauseReason: null, note: "Stopped" });
 }
 
 class Cancelled extends Error {}
@@ -286,14 +286,15 @@ async function ready(tab, g, address, role) {
 
 // Wait until the agent stops working. Blocked means it needs the person: keep
 // waiting (politely) until they answer. The turn counts as over only when the agent stays
-// quiet for QUIET ms, so a moment between two steps isn't taken for the end of its turn.
+// non-working for QUIET_TICKS consecutive 1 s checks, so brief dips between tool calls or
+// sub-agent steps aren't mistaken for the end of its turn.
 // The pair's time limit for one turn (p.turnLimit minutes, 0: none) counts working time
 // only: while the agent waits for you ("blocked") the clock starts again. Over the limit,
 // the job stops with a note; the agent itself goes on in its pane.
-const QUIET = 3000;
+const QUIET_TICKS = 5;
 async function settle(tab, g, address, role, since = Date.now()) {
   const limit = (pair(tab)?.turnLimit ?? 0) * 60000;
-  let quiet = false;
+  let quiet = 0;
   for (;;) {
     if (gen[tab] !== g) throw new Cancelled();
     const s = status(address);
@@ -302,21 +303,24 @@ async function settle(tab, g, address, role, since = Date.now()) {
       update(tab, { note: `The ${role} needs you` });
       await sleep(2000);
       since = Date.now();
-      quiet = false;
+      quiet = 0;
       continue;
     }
     if (s.status !== "working") {
-      if (quiet) return;
-      quiet = true;
-      await sleep(QUIET);
+      quiet++;
+      if (quiet >= QUIET_TICKS) return;
+      await sleep(1000);
       continue;
     }
-    quiet = false;
+    quiet = 0;
     const left = limit ? limit - (Date.now() - since) : Infinity;
     if (left <= 0) {
-      notify({ title: `coderwriter: the ${role} is taking long`, body: `Over ${limit / 60000} min on one turn: paused. Its pane shows what it's doing.`,
+      const mins = limit / 60000;
+      notify({ title: `coderwriter: the ${role} is taking long`, body: `Over ${mins} min on one turn: paused. Its pane shows what it's doing.`,
         level: "warning", action: { name: "tab.select", args: { id: tab } } });
-      throw new Error(`The ${role} worked over ${limit / 60000} min on one turn: paused (it goes on in its pane; Review or Feedback carry on)`);
+      const err = new Error(`The ${role} worked over ${mins} min on one turn: paused (it goes on in its pane; Review or Feedback carry on)`);
+      err.pauseReason = `${mins}m turn limit`;
+      throw err;
     }
     // `ended` means the wait ended; `reason: "exit"` means the program did.
     const secs = String(Math.max(5, Math.min(540, Math.ceil(left / 1000))));
@@ -325,13 +329,37 @@ async function settle(tab, g, address, role, since = Date.now()) {
   }
 }
 
-// Paste a message, press Enter and wait for that turn to end.
+// Paste a message, press Enter and wait for that turn to end. Some agents take a couple of
+// seconds to report "working" after paste, so if hc reports started: false we watch briefly
+// and retry once before giving up (avoiding false Auto drop-outs).
 async function say(tab, g, address, role, text) {
   await ready(tab, g, address, role);
   const since = Date.now(), limit = (pair(tab)?.turnLimit ?? 0) * 60;
   const secs = String(limit ? Math.max(5, Math.min(540, limit)) : 540);
-  const r = await hcJson(["send", "--wait", "--json", "--timeout", secs, address, text], 600000);
-  if (r.started === false) throw new Error(`The ${role} did not take the message: ${r.reason ?? "not started"}`);
+  let r = await hcJson(["send", "--wait", "--json", "--timeout", secs, address, text], 600000);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (r.started === false) {
+    let working = false;
+    for (let i = 0; i < 6; i++) {
+      await sleep(1000);
+      if (gen[tab] !== g) throw new Cancelled();
+      const s = status(address);
+      if (s.state === "gone" || s.state === "finished") throw new Error(`The ${role} (${address}) exited`);
+      if (s.status === "working" || s.status === "blocked") { working = true; break; }
+    }
+    if (!working) {
+      r = await hcJson(["send", "--wait", "--json", "--timeout", secs, address, text], 600000);
+      if (gen[tab] !== g) throw new Cancelled();
+      if (r.started === false) {
+        const s = status(address);
+        if (s.status !== "working" && s.status !== "blocked") {
+          const err = new Error(`The ${role} did not take the message: ${r.reason ?? "not started"}`);
+          err.pauseReason = "Send failed";
+          throw err;
+        }
+      }
+    }
+  }
   if (r.wait?.reason === "exit") throw new Error(`The ${role} (${address}) exited`);
   if (gen[tab] !== g) throw new Cancelled();
   await settle(tab, g, address, role, since);
@@ -1042,6 +1070,7 @@ function pauseForSafety(tab, issues, sig) {
   update(tab, {
     auto: false,
     phase: "safety_paused",
+    pauseReason: isGit ? "Git HEAD moved" : "Safety check",
     safetyAlert: isGit ? null : { sig, issues },
     note: `Safety pause: ${summary}`,
   });
@@ -1450,8 +1479,9 @@ async function job(tab, fn) {
   try { await fn(g); }
   catch (e) {
     if (!(e instanceof Cancelled)) {
-      update(tab, { phase: "error", auto: false, note: String(e.message ?? e) });
-      notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
+      const msg = String(e.message ?? e);
+      update(tab, { phase: "error", auto: false, pauseReason: e.pauseReason ?? "Error", note: msg });
+      notify({ title: "coderwriter", body: msg, level: "error" });
     }
   }
   finally { if (gen[tab] === g) busy[tab] = false; }
@@ -1534,7 +1564,7 @@ async function loop(tab, g) {
     if (verdict === "safety") return;
     if (verdict === "tests") {
       if ((p.testFixes ?? 0) >= TEST_FIX_MAX) {
-        update(tab, { auto: false, note: `Tests still fail after ${p.testFixes} tries: loop paused` });
+        update(tab, { auto: false, pauseReason: "Tests failed", note: `Tests still fail after ${p.testFixes} tries: loop paused` });
         notify({ title: "coderwriter: tests fail", body: `${p.tests?.cmd} still fails after ${p.testFixes} tries`, level: "warning", action: { name: "tab.select", args: { id: tab } } });
         return;
       }
@@ -1542,28 +1572,36 @@ async function loop(tab, g) {
       continue;
     }
     if (verdict === "approved" && planRunning(p)) {
+      update(tab, { repeatStreak: 0, pauseReason: null });
       if ((await afterApproval(tab, g)) === "next") continue;
       return;
     }
     if (verdict === "approved") {
-      update(tab, { auto: false, phase: "approved", note: `Approved in round ${p.round}` });
+      update(tab, { auto: false, phase: "approved", repeatStreak: 0, pauseReason: null, note: `Approved in round ${p.round}` });
       notify({ title: "coderwriter: approved", body: `${p.task || "The change"} — approved in round ${p.round}.${worktreeNote(p)}`, level: "success", action: { name: "tab.select", args: { id: tab } } });
       return;
     }
     if (verdict !== "changes") {
-      update(tab, { auto: false, note: p.kind === "team" ? `${p.note}; loop paused` : `Round ${p.round}: the review has no verdict line; loop paused` });
+      update(tab, { auto: false, pauseReason: "No verdict", note: p.kind === "team" ? `${p.note}; loop paused` : `Round ${p.round}: the review has no verdict line; loop paused` });
       notify({ title: "coderwriter", body: `Round ${p.round}: no VERDICT line in the review, loop paused`, level: "warning" });
       return;
     }
     if ((p.repeats ?? []).length) {
+      const streak = (p.repeatStreak ?? 0) + 1;
       const f = short(p.repeats[0]);
-      update(tab, { auto: false, note: `Round ${p.round}: "${f}" came back from round ${p.round - 1}: loop paused` });
-      notify({ title: "coderwriter: stuck", body: `Round ${p.round} repeats a round ${p.round - 1} finding: "${f}". Loop paused; Feedback sends it back with a nudge.`,
-        level: "warning", action: { name: "tab.select", args: { id: tab } } });
-      return;
+      if (streak >= 2) {
+        update(tab, { auto: false, repeatStreak: streak, pauseReason: "Repeated finding", note: `Round ${p.round}: "${f}" repeated again: loop paused` });
+        notify({ title: "coderwriter: stuck", body: `Round ${p.round} still repeats "${f}" after a nudge. Loop paused; Feedback sends it back manually.`,
+          level: "warning", action: { name: "tab.select", args: { id: tab } } });
+        return;
+      }
+      // First repeat: nudge the writer automatically instead of killing Auto right away.
+      update(tab, { repeatStreak: streak, note: `Round ${p.round}: "${f}" repeated — nudging writer to fix it` });
+    } else if (p.repeatStreak) {
+      update(tab, { repeatStreak: 0 });
     }
     if (p.round - (p.taskStart ?? 0) >= p.max) {
-      update(tab, { auto: false, phase: "limit", note: `Stopped after ${p.round} rounds without approval` });
+      update(tab, { auto: false, phase: "limit", pauseReason: "Round limit", note: `Stopped after ${p.round} rounds without approval` });
       notify({ title: "coderwriter: round limit", body: `${p.round} rounds without approval`, level: "warning", action: { name: "tab.select", args: { id: tab } } });
       return;
     }
@@ -1573,7 +1611,7 @@ async function loop(tab, g) {
 
 export function review(tab) {
   const alert = pair(tab)?.safetyAlert;
-  if (alert?.sig) update(tab, { safetyAck: alert.sig, safetyAlert: null });
+  update(tab, { pauseReason: null, ...(alert?.sig ? { safetyAck: alert.sig, safetyAlert: null } : {}) });
   return job(tab, async (g) => {
     if (pair(tab)?.kind !== "team") return reviewRound(tab, g);
     const v = await teamRound(tab, g);
@@ -1587,6 +1625,7 @@ export function audit(tab, kinds) {
   return job(tab, (g) => reviewRound(tab, g, ok));
 }
 export function feedback(tab) {
+  update(tab, { pauseReason: null });
   return job(tab, (g) => {
     const p = pair(tab);
     if (p?.phase === "tests_failed") return fixTests(tab, g);
@@ -1604,9 +1643,9 @@ export function testNow(tab) {
 }
 export function setAuto(tab, on) {
   const alert = on ? pair(tab)?.safetyAlert : null;
-  update(tab, { auto: on, ...(alert?.sig ? { safetyAck: alert.sig, safetyAlert: null } : {}) });
+  update(tab, { auto: on, ...(on ? { pauseReason: null, repeatStreak: 0 } : {}), ...(alert?.sig ? { safetyAck: alert.sig, safetyAlert: null } : {}) });
   if (on && !busy[tab]) job(tab, (g) => loop(tab, g));
-  if (!on) update(tab, { note: "Auto loop off" });
+  if (!on) update(tab, { pauseReason: null, note: "Auto loop off" });
 }
 
 function newTabId() {
@@ -1722,6 +1761,9 @@ export async function start({ space, folder, sourceFolder = null, task, constrai
     ...(team ? { stages: teamStageIds(tt), roles } : {}),
     round: 0, max, auto, oneShot, lens, kind: team ? "team" : "pair", worktree, turnLimit, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
+  // Clear stale top-level round files from earlier pairs in the same folder so Reviews and
+  // repeat detection start clean (leaves custom subdirs/files inside .coderwriter/ alone).
+  await sh(pair(tab), 'rm -rf "$1"/review-*.md "$1"/tests-*.txt "$1"/round-* 2>/dev/null || true', [REVIEW_DIR]).catch(() => null);
   // Round 0: the files and HEAD before the writer touches them (no-op outside a git repo).
   const headInfo = await gitHeadInfo(pair(tab));
   if (headInfo) update(tab, { baseHead: headInfo.head, baseBranch: headInfo.branch });
@@ -1754,21 +1796,32 @@ export async function start({ space, folder, sourceFolder = null, task, constrai
   return tab;
 }
 
-// On load, a job from an earlier build is gone: say so instead of pretending.
+// On load, re-attach any live Auto pair whose in-memory job was lost on reload (when the
+// writer is mid-turn or waiting for review) instead of silently disabling Auto. Active jobs
+// still running in memory (busy[tab]) are never interrupted.
 export function resumeNote() {
+  const live = new Set(terminals().filter((t) => t.state === "live").map((t) => t.address));
   const all = pairs();
+  const reattach = [];
   let changed = false;
   for (const [tab, p] of Object.entries(all)) {
-    if (["starting", "writing", "reviewing", "auditing", "fixing", "planning", "documenting", "reporting"].includes(p.phase) || p.auto) {
-      all[tab] = { ...p, auto: false, phase: "paused", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
-      changed = true;
-    }
+    if (busy[tab]) continue;
     if (all[tab].tests?.state === "running") {
       all[tab] = { ...all[tab], tests: null };
       changed = true;
     }
+    const bothLive = live.has(p.writer?.t) && live.has(p.reviewer?.t);
+    if (p.auto && bothLive && ["writing", "written", "fixing"].includes(p.phase)) {
+      all[tab] = { ...all[tab], pauseReason: null, note: "Re-attached after reload: waiting for turn to finish" };
+      reattach.push(tab);
+      changed = true;
+    } else if (["starting", "writing", "reviewing", "auditing", "fixing", "planning", "documenting", "reporting"].includes(p.phase) || p.auto) {
+      all[tab] = { ...all[tab], auto: false, phase: "paused", pauseReason: "Herdr reloaded", note: "Paused (Herdr reloaded): press Review or Auto to go on" };
+      changed = true;
+    }
   }
   if (changed) setShared(PAIRS, all);
+  for (const tab of reattach) setAuto(tab, true);
 }
 
 // Drop pairs whose agents are both gone (tab closed).

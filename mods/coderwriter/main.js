@@ -76,8 +76,12 @@ class Bar {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        // No space open yet: open one in the pair's folder rather than refusing.
-        let space = this.space() ?? await P.openSpace(folder);
+        // Match an existing space for the chosen folder when not creating a worktree,
+        // so pairs for another repo don't land in the wrong space.
+        const active = this.space();
+        const norm = (s) => (s ?? "").replace(/\/+$/, "");
+        let space = (!req.worktree && spaces().find((s) => (s.machine ?? null) === (active?.machine ?? null) && norm(s.folder) === norm(folder)))
+          ?? active ?? await P.openSpace(folder);
         let list = known(space.machine);
         try { list = await refreshKnown(space.machine); } catch { /* use the cached list */ }
         const pick = (key, role) => agentFor(key, list, role);
@@ -229,6 +233,14 @@ class Bar {
       ]));
   }
 
+  pausePill(t, p) {
+    if (!p?.pauseReason || p.auto) return null;
+    return h_flex().flex_none().px(7).h(20).gap(4).items_center().rounded(6).bg(t.blocked + "26").text_color(t.blocked).text_size(11).font_semibold()
+      .tooltip(p.note ?? p.pauseReason)
+      .child(svg(I("alert")).size(11))
+      .child(p.pauseReason);
+  }
+
   verdictPill(t, p) {
     if (!p?.verdict) return null;
     const map = { approved: ["Approved", t.done ?? t.ansi2], changes: ["Changes requested", t.blocked], missing: ["No review file", t.dim], unknown: ["No verdict", t.dim] };
@@ -249,6 +261,7 @@ class Bar {
         .when(busy, (el) => el.child(svg(I("spinner")).size(12).flex_none().text_color(t.working).spin(900)))
         .child(div().min_w(0).truncate().text_size(11.8).text_color(t.muted).child(p.note ?? "")))
       .child(p.kind === "team" ? this.teamStrip(t, p) : this.verdictPill(t, p) ?? div())
+      .when(Boolean(p.pauseReason && !p.auto), (el) => el.child(this.pausePill(t, p)))
       .child(this.testsChip(t, p))
       .when(p.kind !== "team", (el) => el.child(this.lensChip(t, p))) // a team's quality check always uses Ponytail
       .child(this.rounds(t, p))
