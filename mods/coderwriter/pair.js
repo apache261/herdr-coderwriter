@@ -158,6 +158,56 @@ export function joinArgs(args) {
   return args.map((a) => (a === "" ? "''" : /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(" ");
 }
 
+// Herdr's own environment (started from a desktop launcher) lacks what the person's
+// interactive shell adds to PATH, e.g. nvm's node. Agents' hooks and tools run via
+// /bin/sh with the agent's PATH, so a Claude Code plugin hook calling `node` failed
+// with "node: not found". This asks the person's shell for its PATH, merges it in front
+// of ours (no duplicates, no empty entries), then execs the agent.
+// - Login + interactive (-lic), so ~/.zprofile, ~/.bash_profile and rc files all count;
+//   bash -lic skips ~/.bashrc when ~/.bash_profile doesn't source it, so bash also runs
+//   -ic, and csh/tcsh (which take -l only alone) run -ic.
+// - A POSIX `sh` child prints PATH, so fish's list-valued $PATH arrives colon-separated;
+//   markers skip anything the rc files print.
+// - setsid detaches the shell from the agent's terminal: an interactive shell in a
+//   background process group of a PTY is stopped by SIGTTIN/SIGTTOU (and timeout with it).
+//   timeout -k escalates to SIGKILL, which an interactive bash can't ignore. Without
+//   setsid, timeout --foreground stays in the terminal's foreground group instead.
+const PATH_LOADER = String.raw`
+if [ -n "$SHELL" ]; then
+  set -f
+  R=; T=
+  if command -v setsid >/dev/null 2>&1; then
+    R=setsid; setsid -w true >/dev/null 2>&1 && R="setsid -w"
+    command -v timeout >/dev/null 2>&1 && T="timeout -k 1 5"
+  elif command -v timeout >/dev/null 2>&1 && timeout --foreground -k 1 5 true >/dev/null 2>&1; then
+    T="timeout --foreground -k 1 5"
+  fi
+  _CW_PRINT='printf "\n__CW_PATH__%s__CW_PATH__\n" "$PATH"'; export _CW_PRINT
+  cw_get() {
+    cw_out=$($R $T "$SHELL" "$1" 'sh -c "$_CW_PRINT"' 2>/dev/null </dev/null)
+    printf '%s\n' "$cw_out" | sed -n 's/^__CW_PATH__\(.*\)__CW_PATH__$/\1/p' | tail -n 1
+  }
+  case "$SHELL" in
+    */bash) cw_a=$(cw_get -lic); cw_b=$(cw_get -ic) ;;
+    */csh|*/tcsh) cw_a=$(cw_get -ic); cw_b= ;;
+    *) cw_a=$(cw_get -lic); cw_b= ;;
+  esac
+  unset _CW_PRINT
+  if [ -n "$cw_a$cw_b" ]; then
+    cw_p=; cw_list=$(IFS=:; printf '%s\n' $cw_a $cw_b $PATH)
+    IFS='
+'
+    for cw_d in $cw_list; do
+      case ":$cw_p:" in *":$cw_d:"*) ;; *) if [ -n "$cw_p" ]; then cw_p="$cw_p:$cw_d"; else cw_p=$cw_d; fi ;; esac
+    done
+    unset IFS
+    PATH=$cw_p; export PATH
+  fi
+  set +f
+fi
+exec "$@"`;
+export const withShellPath = (argv) => (argv.length ? ["sh", "-c", PATH_LOADER, "sh", ...argv] : argv);
+
 // The argv a pair starts an agent with: its base command plus the person's flags, plus
 // (with a role) that role's model and effort.
 export function launchArgv(agent, role = null) {
@@ -1444,8 +1494,8 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     const args = ["run", "--bg", "--keep", "--json", "--no-parent", "--cwd", folder];
     if (machine) args.push("--on", machine);
     if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
-    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...launchArgv(agent, role),
-      ...charterArgs(agent.key, role, { team, agyPmAgent }));
+    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...withShellPath([...launchArgv(agent, role),
+      ...charterArgs(agent.key, role, { team, agyPmAgent })]));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
     return r.address;

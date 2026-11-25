@@ -218,7 +218,11 @@ Everything goes in `.coderwriter/` in the pair's folder, which is added to the r
 ## What it runs and reads
 
 - Starts the agents and sends them messages with Herdr's `hc` (`hc run`, `hc send`, `hc wait`),
-  and places a team's panes with Herdr's `terminal.keep` and `pane.swap`.
+  and places a team's panes with Herdr's `terminal.keep` and `pane.swap`. Each agent starts
+  through `sh`, which first asks your shell for its `PATH` (`$SHELL -lic`, plus `-ic` for bash;
+  `-ic` for csh/tcsh; detached from the terminal with `setsid`, killed after 5 seconds each) and
+  puts those entries ahead of Herdr's, so tools your shell profile or rc sets up (nvm's `node`,
+  for plugin hooks) are found.
 - Own git worktree: `git worktree add -b cw/<task>-<id> <path> HEAD` in the folder's repo
   (reading `worktrees.directory` from Herdr's `settings.json`), then `space.new` there. The
   dialog runs `git rev-parse` and `git status --porcelain` in the folder to say what will happen.
