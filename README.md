@@ -20,17 +20,31 @@ your working copy is never touched.
 
 - Writer and reviewer side by side, each pane marked `WRITER` / `REVIEWER` with a live status.
 - **Review →**, **← Feedback**, or **Auto** (on by default) for hands-off rounds (1–10, default 3).
+- **One-shot mode & constraints**: toggle **One-shot** in the New pair dialog for a single
+  high-confidence pass (bumps the writer to `high` effort where supported, injects the test
+  command and review rubric up front, self-verifies before finishing, and stops after 1 strict
+  review round where minor style nits stay non-blocking). Add optional **Constraints / do not
+  touch** rules to carry through writer, PM, and reviewer briefs.
 - **Test gate**: a test command per folder (`npm test`, `pytest -q`, …) runs before every
-  review. A failure goes back to the writer instead of the reviewer; Auto tries 3 times, then
-  pauses.
+  review (inherited automatically when working in a git worktree). A failure goes back to the
+  writer instead of the reviewer; Auto tries 3 times, then pauses.
 - **Ponytail review** (optional): the reviewer follows
   [Ponytail](https://github.com/DietrichGebert/ponytail)'s `ponytail-review` skill each round
   (correct, safe, holds under load, tested, fast, lean), keeping the verdict format.
-- **Role persistence & reviewer guard**: writer and reviewer keep their role in a persistent
-  system prompt where supported (Claude Code `--append-system-prompt`, Codex and custom models
-  `-c developer_instructions=…`), every feedback and test-fix brief restates the role, and
-  coderwriter watches for stray project-file edits by the reviewer outside `.coderwriter/` and
-  asks it to revert them.
+- **Role persistence & deterministic safety guards**: writer and reviewer keep their role in a
+  persistent system prompt where supported (Claude Code `--append-system-prompt`, Codex and
+  custom models `-c developer_instructions=…`), every feedback and test-fix brief restates the
+  role, and coderwriter enforces deterministic guards in git:
+  - **Auto-revert stray edits**: project-file edits outside `.coderwriter/` by the reviewer or
+    PM (or non-doc edits by the docs writer) are automatically restored from the pre-turn
+    snapshot instead of asking the LLM to run `git checkout`.
+  - **Git integrity guard**: verifies `HEAD` and branch did not move (catches accidental
+    `git commit`, `git reset`, or `git checkout`) and pauses Auto before review.
+  - **Destruction & test-tampering circuit breaker**: pauses Auto if a round deletes ≥ 3
+    tracked files, deletes protected files (`.env*`, lockfiles, `.github/workflows/*`), makes a
+    large net deletion (`≥ 300` lines and `> 2×` lines added), or (in Pair mode) deletes test
+    files or adds test `.skip`/`.only` markers. Press **Review** or **Auto** again to
+    acknowledge and continue if intentional.
 
 ## Team (preview)
 

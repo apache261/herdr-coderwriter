@@ -34,8 +34,8 @@ export class Tests {
     this.guesses = [];
     const p = this.pair();
     this.input = InputState.new({ placeholder: "e.g. pytest -q, npm test, cargo test" });
-    this.input.set_value(p ? P.testCommand(p.folder) : "");
-    this.input.on("change", (_e, cx) => { const p = this.pair(); if (p) P.setTestCommand(p.folder, this.input.value()); cx.notify(); });
+    this.input.set_value(p ? P.pairTestCommand(p) : "");
+    this.input.on("change", (_e, cx) => { const p = this.pair(); if (p) P.setTestCommand(p.folder, this.input.value(), p.sourceFolder); cx.notify(); });
     if (p) cx.spawn(async (cx) => {
       try {
         const r = await exec("ls", ["-1"], { cwd: p.folder, timeout: 5000, ...(p.machine ? { on: p.machine } : {}) });
@@ -70,7 +70,7 @@ export class Tests {
     const t = theme();
     const p = this.pair();
     if (!p) return v_flex().size_full().bg(t.popover).p(14).text_size(12.5).text_color(t.muted).child("Open a pair's tab to set its tests.");
-    const cmd = P.testCommand(p.folder);
+    const cmd = P.pairTestCommand(p);
     const run = p.tests;
     const busy = P.isBusy(p.tab);
     const ok = t.done ?? t.ansi2;
@@ -82,7 +82,7 @@ export class Tests {
     const guess = (c) => h_flex().id(`guess-${c}`).h(22).px(7).flex_none().items_center().rounded(6).text_size(11.5)
       .border_1().border_color(c === cmd ? t.accent : t.border).bg(c === cmd ? t.selected : t.background)
       .text_color(t.muted).font_family("JetBrains Mono").hover((s) => s.bg(t.hover)).cursor_pointer()
-      .on_click((_e, cx) => { this.input.set_value(c); P.setTestCommand(p.folder, c); cx.notify(); })
+      .on_click((_e, cx) => { this.input.set_value(c); P.setTestCommand(p.folder, c, p.sourceFolder); cx.notify(); })
       .child(c);
 
     const runButton = h_flex().id("run-tests").h(26).px(9).gap(6).flex_none().items_center().rounded(6).text_size(12).font_medium()

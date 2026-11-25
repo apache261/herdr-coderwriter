@@ -51,12 +51,17 @@ function flagValue(args, names) {
   }
   return null;
 }
-function tuneArgs(key, role, extraFlags = []) {
+function tuneArgs(key, role, extraFlags = [], opts = {}) {
   const t = role ? prefs().tune[role] ?? {} : {};
   const models = MODELS[key];
   const model = models && models.includes(t.model) ? t.model : "";
   const efforts = effortsFor(key, model);
-  const effort = efforts && efforts.includes(t.effort) ? t.effort : "";
+  let effort = efforts && efforts.includes(t.effort) ? t.effort : "";
+  // In one-shot mode, bump the writer to high effort when the agent supports it so it
+  // plans and self-verifies thoroughly on the first turn.
+  if (opts.oneShot && role === "writer" && efforts?.includes("high") && (!effort || effort === "low" || effort === "medium")) {
+    effort = "high";
+  }
   const userModel = flagValue(extraFlags, ["--model", "-m"]);
   const userEffort = flagValue(extraFlags, ["--effort"]);
   if (key === "claude") return [...(!userModel && model ? ["--model", model] : []), ...(!userEffort && effort ? ["--effort", effort] : [])];
@@ -75,7 +80,7 @@ export const REVIEW_DIR = ".coderwriter";
 
 export function prefs() {
   const raw = shared(PREFS) ?? {};
-  const p = { writer: "claude", reviewer: "claude", max: 3, auto: true, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...raw, ...(raw.autoDefault ? {} : { auto: true }) };
+  const p = { writer: "claude", reviewer: "claude", max: 3, auto: true, oneShot: false, lens: false, team: false, tester: "claude", pm: "claude", docs: "claude", docsOn: true, worktree: true, turnLimit: 30, ...raw, ...(raw.autoDefault ? {} : { auto: true }) };
   p.flags = { claude: "", codex: "", gemini: "", antigravity: "", ...(p.flags ?? {}) };
   p.menu = { claude: false, codex: false, gemini: false, antigravity: false, ...(p.menu ?? {}) };
   p.models = Array.isArray(p.models) ? p.models : [];
@@ -210,14 +215,14 @@ export const withShellPath = (argv) => (argv.length ? ["sh", "-c", PATH_LOADER, 
 
 // The argv a pair starts an agent with: its base command plus the person's flags, plus
 // (with a role) that role's model and effort.
-export function launchArgv(agent, role = null) {
+export function launchArgv(agent, role = null, opts = {}) {
   if (agent.key === CMD) return splitArgs(agent.command ?? "");
   const m = customModel(agent.key);
   // Custom models run Codex, so they take Codex's flags.
   if (m) return [...customArgv(m), ...splitArgs(prefs().flags.codex ?? "")];
   const base = BASE_RUN[agent.key] ?? agent.run;
   const extra = splitArgs(prefs().flags[agent.key] ?? "");
-  return [...base, ...extra, ...tuneArgs(agent.key, role, extra)];
+  return [...base, ...extra, ...tuneArgs(agent.key, role, extra, opts)];
 }
 export function setPrefs(patch) { setShared(PREFS, { ...prefs(), autoDefault: 1, ...patch }); }
 
@@ -410,13 +415,24 @@ export function askAudit(tab) {
   openOverlay({ mod: "coderwriter", kind: "dialog", width: 560, height: 440, props: { role: "audit", tab } });
 }
 
-export function writerBrief(task, team = false) {
-  if (team) return `You are the CODER in a team: a tester and a reviewer check your work.\n\n${task}\n\n(Make the change in this folder and leave it uncommitted. ` +
-    `When you finish, and after every fix, write what you changed and why, and how you checked it, to ${CODER_NOTES}. ` +
-    `A tester writes and runs the tests: don't edit test files; if you think a test is wrong, say why in ${CODER_NOTES}. ` +
-    `Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
-  return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted. ` +
-    `A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
+export function writerBrief(task, teamOrOpts = false) {
+  const opts = typeof teamOrOpts === "boolean" ? { team: teamOrOpts } : (teamOrOpts ?? {});
+  const { team = false, testCmd = "", lens = false, oneShot = false, constraints = "" } = opts;
+  const guard = ` Before ending your turn: keep edits strictly scoped to the task, inspect \`git status\` and \`git diff --stat\` to make sure nothing unrelated was modified or deleted, never run \`git commit\`, \`git push\`, or \`git reset --hard\`, and never delete or skip existing tests to make tests pass.`;
+  const check = testCmd ? ` Run \`${testCmd}\` before finishing and make sure it passes.` : "";
+  const extra = constraints ? ` Constraints / do not touch: ${constraints}.` : "";
+  if (team) return `You are the CODER in a team: a tester and a reviewer check your work.\n\n${task}\n\n(Make the change in this folder and leave it uncommitted.${extra}` +
+    ` When you finish, and after every fix, write what you changed and why, and how you checked it, to ${CODER_NOTES}.` +
+    ` A tester writes and runs the tests: don't edit test files; if you think a test is wrong, say why in ${CODER_NOTES}.` +
+    `${check}${guard} Then the team checks your work (tests, then review); everything that fails comes back to you in one note, ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
+  const mode = oneShot
+    ? ` This is a ONE-SHOT run: read the relevant code and conventions first, plan the minimal complete change, handle edge cases, and self-verify everything in this single turn.`
+    : "";
+  const rubric = lens
+    ? ` Your change will be reviewed for correctness, safety, edge cases, tests, performance, and lean minimal diff (Ponytail review): meet that bar on the first pass.`
+    : "";
+  return `${task}\n\n(You are the WRITER in a writer/reviewer pair. Make the change in this folder and leave it uncommitted.${extra}${mode}${rubric}${check}${guard}` +
+    ` A reviewer agent reads your uncommitted changes; its reviews arrive as ${REVIEW_DIR}/review-<n>.md.${FINISH})`;
 }
 // out: where the review goes and its verdict words (a team stage writes PASS / FAIL).
 export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/review-${round}.md`, ok: "APPROVED", no: "CHANGES_REQUESTED" }) {
@@ -427,6 +443,7 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
     (sub.base && now ? `, \`git diff ${sub.base} ${now}\` (snapshots that include untracked files)` : "") + ".";
   const final = isFinal(p), body = out.criteria ? subtaskBody(p) : "";
   const crit = body ? ` Check the change against the subtask as the PM planned it, and that its "Done when:" holds:\n\n${quoted(body)}\n\n` : "";
+  const constraints = p.constraints ? ` Respect these user constraints (flag any violation): ${p.constraints}.` : "";
   const snaps = !now || (final && firstRound(p, round)) ? "" : round > 1 && prev && !firstRound(p, round)
     ? ` Since your round ${round - 1} review the writer changed \`git diff ${prev} ${now}\`: start there and check the findings of ${REVIEW_DIR}/review-${round - 1}.md were addressed.` +
       (base && !final ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "")
@@ -436,11 +453,15 @@ export function reviewBrief(p, round, lens = null, out = { file: `${REVIEW_DIR}/
     : t.state === "fail" ? ` The tests (\`${t.cmd}\`) fail; that is reported to the writer already, so don't repeat it.` : "";
   const notes = p.kind === "team" ? ` The writer's own notes on the change: ${REVIEW_DIR}/round-${round}/coder.md (if it wrote them).` : "";
   const who = p.kind === "team" ? `You are the REVIEWER in a team (round ${round}).` : `You are the REVIEWER in a writer/reviewer pair (round ${round}).`;
+  const verdictRule = ` Check for regressions, broken callers, and accidental deletions or weakened/skipped tests.` +
+    ` Return "VERDICT: ${out.no}" ONLY for real defects (unmet requirements, bugs, regressions, broken existing behavior, missing error handling on real paths, or security issues);` +
+    ` put minor style nits or optional refactors under a "Non-blocking notes:" section while still returning "VERDICT: ${out.ok}".`;
   return who + (out.focus ?? "") +
-    (taskText(p) ? ` The writer's task: ${taskText(p)}.` : "") + crit +
+    (taskText(p) ? ` The writer's task: ${taskText(p)}.` : "") + constraints + crit +
     ` Review the writer's uncommitted changes in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/).` +
     (final ? finalFocus(p, round, out.check ?? "quality") : "") + scope + snaps + tests + notes +
     (lens ? ` Review with the ponytail-review skill: read ${lens} and follow its method, but write the file in the format below.` : "") +
+    verdictRule +
     ` Do not edit project files. Write your review to ${file}: the first line exactly "VERDICT: ${out.ok}" or "VERDICT: ${out.no}",` +
     ` then numbered findings, most important first, each with the file and what to change.` + FINISH + ` Then stop.`;
 }
@@ -466,16 +487,17 @@ export function feedbackBrief(p) {
     ? ` These were raised in round ${round - 1} too and are still open: ${p.repeats.map((f) => `"${short(f, 140)}"`).join("; ")}. ` +
       `Fix them properly this time, or explain why you won't.`
     : "";
+  const extra = p.constraints ? ` Constraints / do not touch: ${p.constraints}.` : "";
   if (p.kind === "team") {
     const failed = Object.entries(p.stageResults ?? {}).filter(([, r]) => r === "fail").map(([id]) => STAGES[id]?.name ?? id);
     return restoredNote(p) + `You are the CODER in a team${taskText(p) ? `; your task: ${taskText(p)}` : ""}. ` +
-      `Round ${round}: ${failed.length ? failed.join(", ") + " failed" : "changes requested"}. ` +
+      `Round ${round}: ${failed.length ? failed.join(", ") + " failed" : "changes requested"}.${extra} ` +
       `Everything to fix is in ${REVIEW_DIR}/review-${round}.md (each check's full report is in ${REVIEW_DIR}/round-${round}/). ` +
       `Address every finding (push back in your reply if you disagree with one).${again} ` +
       `Fix the code, not the tests: test files are the tester's; if a test is wrong, say why in ${CODER_NOTES}. ` +
       `Then update ${CODER_NOTES} with what you changed. Keep the changes uncommitted.${FINISH}`;
   }
-  return restoredNote(p) + `You are the WRITER in a writer/reviewer pair${taskText(p) ? `; your task: ${taskText(p)}` : ""}. ` +
+  return restoredNote(p) + `You are the WRITER in a writer/reviewer pair${taskText(p) ? `; your task: ${taskText(p)}` : ""}.${extra} ` +
     `The reviewer's round ${round} review is in ${REVIEW_DIR}/review-${round}.md. Read it and address every finding ` +
     `(push back in your reply if you disagree with one).${again} Keep the changes uncommitted.${FINISH}`;
 }
@@ -524,7 +546,7 @@ async function coderTouchedTests(p, round) {
 export const teamStageIds = (tester) => [...(tester ? ["tester"] : []), "tests", "quality", "security"];
 const MAX_SECTION = 20000; // characters of a failed stage's report copied into review-<n>.md
 export function teamStages(p) {
-  return (p.stages ?? ["tests", "review"]).filter((id) => STAGES[id] && (id !== "tests" || testCommand(p.folder)));
+  return (p.stages ?? ["tests", "review"]).filter((id) => STAGES[id] && (id !== "tests" || pairTestCommand(p)));
 }
 // The agent playing a role: the pair's writer / reviewer, or one of p.roles (tester, pm…).
 const roleOf = (p, role) => p.roles?.[role] ?? p[role] ?? null;
@@ -579,7 +601,7 @@ export function testerBrief(p, round, file) {
   const crit = body ? ` The subtask as the PM planned it; test what its "Tests:" asks for and that its "Done when:" holds:\n\n${quoted(body)}\n\n` : "";
   const since = round > 1 && prev && now && !firstRound(p, round) ? ` Since round ${round - 1} the coder changed \`git diff ${prev} ${now}\`.` : "";
   const whole = final && firstRound(p, round) ? "" : base && now ? ` The whole change${sub ? " so far, earlier subtasks included," : ""} is \`git diff ${base} ${now}\`.` : "";
-  const cmd = testCommand(p.folder);
+  const cmd = pairTestCommand(p);
   return `You are the TESTER in a team (round ${round}).` +
     (taskText(p) ? ` The coder's task: ${taskText(p)}.` : "") + crit +
     ` The coder's uncommitted changes are in this folder (git status, git diff, untracked files; ignore ${REVIEW_DIR}/);` +
@@ -623,13 +645,19 @@ function combine(round, results) {
   return parts.join("\n") + "\n";
 }
 
-// One team round: snapshot, the coder's notes, every stage, then review-<n>.md.
+// One team round: snapshot, safety checks, the coder's notes, every stage, then review-<n>.md.
 async function teamRound(tab, g) {
   let p = pair(tab);
   await settle(tab, g, p.writer.t, "writer");
+  const gitCheck = await checkGitIntegrity(tab, "coder");
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!gitCheck.ok) return pauseForSafety(tab, [gitCheck.reason], "git");
   const round = (p.round ?? 0) + 1;
   await checkpoint(tab, round);
   p = pair(tab);
+  const safety = await checkDestruction(p, p.subtaskBase ?? p.checkpoints?.[0] ?? null, p.checkpoints?.[round] ?? null);
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!safety.ok && safety.sig !== p.safetyAck) return pauseForSafety(tab, safety.issues, safety.sig);
   const ids = teamStages(p);
   await sh(p, 'mkdir -p "$1" && if [ -f "$2" ]; then cp "$2" "$1/coder.md"; fi', [`${REVIEW_DIR}/round-${round}`, CODER_NOTES]).catch(() => null);
   const touched = ids.includes("tester") ? await coderTouchedTests(p, round) : [];
@@ -664,6 +692,9 @@ async function teamRound(tab, g) {
       }
     }
   }
+  const postGit = await checkGitIntegrity(tab, "team");
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!postGit.ok) return pauseForSafety(tab, [postGit.reason], "git");
   const file = `${REVIEW_DIR}/review-${round}.md`;
   const w = await sh(pair(tab), 'mkdir -p "$(dirname "$1")" && printf "%s" "$2" > "$1"', [file, combine(round, results)]);
   if (w.code !== 0) throw new Error(`Could not write ${file}: ${(w.stderr || "").trim()}`);
@@ -698,7 +729,7 @@ const TEAM = "a coderwriter team working in this folder: a PM plans, a CODER wri
 const CLEARED = ` Your conversation is cleared before each new subtask of the PM's plan (${PLAN}). The subtasks approved before ` +
   `it are already in this folder, uncommitted, and ${PROGRESS} says what each one changed: read it when a message points you there.`;
 const ALWAYS = " Always: finish the whole job in one turn (wait for your own sub-agents and background commands), write your file " +
-  "where the message says, never commit, and never wait for a person to tell you to go on.";
+  "where the message says, never run git commit, git push, or git reset --hard, never touch files outside this folder, and never wait for a person to tell you to go on.";
 const PM_RULES = `You NEVER write code, edit project files, or spawn subagents, background agents, workflows, or swarms to execute work. ` +
   `You may only edit ${PLAN} (when planning) and ${REPORT} (when reporting). ` +
   `Your ONLY way to delegate work is writing ${PLAN} and stopping: coderwriter detects ${PLAN}, opens the Plan dialog for the user to approve, ` +
@@ -710,14 +741,15 @@ const PAIR = "a coderwriter writer/reviewer pair working in this folder: a WRITE
   "coderwriter, a program, hands the work between you.";
 export const PAIR_CHARTERS = {
   writer: `You are the WRITER in ${PAIR} You make the changes in this folder and leave them uncommitted. ` +
+    `Keep edits strictly scoped to the task: never delete or rewrite unrelated files, and never delete or skip existing tests to make tests pass. ` +
     `After each review, read ${REVIEW_DIR}/review-<n>.md and address its findings.` + ALWAYS,
   reviewer: `You are the REVIEWER in ${PAIR} Each round you review the writer's uncommitted changes and write your verdict and ` +
     `numbered findings to ${REVIEW_DIR}/review-<n>.md. You NEVER edit project files (you may only write inside ${REVIEW_DIR}/).` + ALWAYS,
 };
 export const CHARTERS = {
   writer: `You are the CODER in ${TEAM} You make the changes in this folder and leave them uncommitted. Test files belong to the ` +
-    `tester: never edit them; if one is wrong, say why in ${CODER_NOTES}. After every turn write to ${CODER_NOTES} what you ` +
-    `changed and why, and how you checked it. Build on the earlier subtasks' work; don't redo or revert it.` + ALWAYS + CLEARED,
+    `tester: never edit them; if one is wrong, say why in ${CODER_NOTES}. Keep edits strictly scoped and never delete or rewrite unrelated files. ` +
+    `After every turn write to ${CODER_NOTES} what you changed and why, and how you checked it. Build on the earlier subtasks' work; don't redo or revert it.` + ALWAYS + CLEARED,
   tester: `You are the TESTER in ${TEAM} You write and run unit and functional tests for the coder's change. Edit only test ` +
     `files, fixtures and test config, never the code under test: a bug in it is a finding in your report. Tests from earlier ` +
     `subtasks stay and must keep passing.` + ALWAYS + CLEARED,
@@ -826,10 +858,11 @@ async function logProgress(tab) {
     [PROGRESS, head + entry, CODER_NOTES, at ? "add" : "new"]).catch(() => null);
   update(tab, { subtaskBase: sha ?? null });
 }
-export function pmBrief(task) {
+export function pmBrief(task, constraints = "") {
+  const extra = constraints ? `Constraints / do not touch (carry these into the plan's subtasks): ${constraints}\n\n` : "";
   return `You are the PM (project manager) of a small team in this folder: a CODER writes the code, a TESTER writes and runs the tests, ` +
     `and a REVIEWER checks quality and security. You plan and report ONLY; ${PM_RULES} ` +
-    (task ? `\n\nThe user's task: ${task}\n\n` : `\n\nThe user will give you the task here. `) +
+    (task ? `\n\nThe user's task: ${task}\n\n` : `\n\nThe user will give you the task here. `) + extra +
     `Read enough of the repository to plan it (README, layout, the code the task touches). If something important is unclear, ` +
     `ask the user here and wait for the answer—keep planning focused and write an initial ${PLAN} as soon as requirements are clear ` +
     `rather than letting the chat grow long. Write the plan to ${PLAN}: a one-line goal, then the subtasks in the order ` +
@@ -844,10 +877,12 @@ const nudgePlanBrief = () => `Hand off the task now by writing ${PLAN} in the re
   `"## <n>. <title>" subtasks with "Do:", "Done when:", and "Tests:"). Reminder: you are the PM (planner only)—do NOT write code, ` +
   `edit project files, or spawn subagents/workers. Writing ${PLAN} and stopping is how coderwriter delegates the subtasks to the ` +
   `separate CODER, TESTER, and REVIEWER panes once the user clicks "Approve & start". Write ${PLAN} now, then stop.`;
-const pmGuardBrief = (files) => `STOP: You (or a subagent you spawned) modified project files outside ${REVIEW_DIR}/: ${files.join(", ")}. ` +
+const pmGuardBrief = (files, reverted = false) => `STOP: You (or a subagent you spawned) modified project files outside ${REVIEW_DIR}/: ${files.join(", ")}. ` +
+  (reverted ? `coderwriter has already reverted those project file edits automatically. ` : "") +
   `As the PM, you NEVER write code, edit project files, or spawn subagents/workers to implement work—the separate CODER pane does that ` +
-  `after the user approves ${PLAN}. Cancel any subagents you started, revert those project file edits back to how they started (do not ` +
-  `touch ${REVIEW_DIR}/), then write only ${PLAN} (if ready) and stop.`;
+  `after the user approves ${PLAN}. Cancel any subagents you started` +
+  (reverted ? "" : `, revert those project file edits back to how they started (do not touch ${REVIEW_DIR}/)`) +
+  `, then write only ${PLAN} (if ready) and stop.`;
 function reportBrief(p) {
   const n = p.plan.tasks.length;
   return `You are the PM (planner and reporter only; do NOT edit code or spawn subagents). ` +
@@ -879,16 +914,13 @@ async function readPlan(p) {
   try { return await readTextFile(join(p.folder, PLAN), where(p)); } catch { return null; }
 }
 
-const reviewerGuardBrief = (files) => `STOP: You modified project files outside ${REVIEW_DIR}/: ${files.join(", ")}. ` +
-  `As the REVIEWER, you NEVER edit project files—only the writer does. Revert those project file edits back to how they were ` +
-  `before your review (do not touch ${REVIEW_DIR}/), then stop.${FINISH}`;
-
+// ---- deterministic safety guards ------------------------------------------------
 // Files outside .coderwriter/ that differ from a snapshot sha (including untracked files),
-// without touching the real git index or creating refs. Used to catch a PM or reviewer
-// that drifts into editing project files.
+// without touching the real git index or creating refs. Used to catch a PM, reviewer or
+// docs writer that drifts into editing disallowed project files.
 const DIFF_OUTSIDE = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0; ' +
   'idx=$(mktemp) || exit 1; trap \'rm -f "$idx"\' EXIT; ' +
-  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp "$real" "$idx" || rm -f "$idx"; ' +
+  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp -p "$real" "$idx" || rm -f "$idx"; ' +
   'GIT_INDEX_FILE="$idx" git add -A :/ >/dev/null 2>&1 || exit 1; ' +
   'GIT_INDEX_FILE="$idx" git diff --cached --name-only "$1" -- . ":(exclude)$2"';
 async function touchedFiles(p, base) {
@@ -896,6 +928,132 @@ async function touchedFiles(p, base) {
   const r = await sh(p, DIFF_OUTSIDE, [base, REVIEW_DIR]).catch(() => null);
   return (r?.stdout ?? "").split("\n").filter(Boolean);
 }
+
+// Deterministically revert only the named files back to how they were at `base` (restoring
+// tracked files from `base`, deleting newly created files that did not exist in `base`).
+// Never asks an LLM to run git checkout, which could wipe the writer's uncommitted work.
+const REVERT_FILES = 'top=$(git rev-parse --show-toplevel) && cd "$top" || exit 1; ' +
+  'base=$1; shift; ' +
+  'for f in "$@"; do ' +
+  '  [ -z "$f" ] && continue; ' +
+  '  if git cat-file -e "$base:$f" 2>/dev/null; then ' +
+  '    git restore --source="$base" --worktree -- "$f" || exit 1; ' +
+  '  else ' +
+  '    rm -f -- "$f" || exit 1; ' +
+  '  fi; ' +
+  'done';
+const isSafeRelPath = (f) => Boolean(f) && !f.startsWith("/") && f !== ".." && !f.startsWith("../") && !f.includes("/../")
+  && f !== ".git" && !f.startsWith(".git/") && f !== REVIEW_DIR && !f.startsWith(`${REVIEW_DIR}/`);
+async function revertFiles(p, base, files) {
+  const safe = (files ?? []).filter(isSafeRelPath);
+  if (!base || !safe.length) return false;
+  const r = await sh(p, REVERT_FILES, [base, ...safe], 60000).catch(() => null);
+  return r?.code === 0;
+}
+
+// Verify git HEAD and branch did not move (catches accidental git commit / reset / checkout).
+const GIT_HEAD = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 3; ' +
+  'git rev-parse -q --verify HEAD 2>/dev/null || echo ""; ' +
+  'git rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""';
+async function gitHeadInfo(p) {
+  const r = await sh(p, GIT_HEAD, [], 10000).catch(() => null);
+  if (!r || r.code !== 0) return null;
+  const [head = "", branch = ""] = (r.stdout ?? "").split("\n").map((s) => s.trim());
+  return { head: head || null, branch: branch || null };
+}
+const shortSha = (s) => (s ? s.slice(0, 7) : "none");
+async function checkGitIntegrity(tab, role = "writer") {
+  const p = pair(tab);
+  if (!p?.baseHead && !p?.baseBranch) return { ok: true };
+  const cur = await gitHeadInfo(p);
+  if (!cur) return { ok: true };
+  const headMoved = Boolean(p.baseHead && cur.head !== p.baseHead);
+  const branchMoved = Boolean(p.baseBranch && cur.branch !== p.baseBranch);
+  if (!headMoved && !branchMoved) return { ok: true };
+  const parts = [];
+  if (branchMoved) parts.push(`branch ${p.baseBranch} → ${cur.branch || "detached"}`);
+  if (headMoved) parts.push(`HEAD ${shortSha(p.baseHead)} → ${shortSha(cur.head)}`);
+  return {
+    ok: false,
+    reason: `The ${role} changed git state (${parts.join(", ")} — e.g. ran git commit, reset, or checkout). Inspect git log or run \`git reset --soft ${shortSha(p.baseHead)}\` before continuing.`,
+  };
+}
+
+// Blast-radius & test-tampering checks: catches mass deletions, deleted protected files,
+// and (in pair mode) deleted tests or newly introduced test-skip markers.
+export const PROTECTED_PATH = /(^|\/)(\.env(\..+)?|\.github\/workflows\/.+|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|go\.sum)$/;
+export const TEST_SKIP_RE = /\b(it|test|describe)\.(skip|only)\s*\(|\b(xit|xdescribe|xtest)\s*\(|@pytest\.mark\.skip\b|\bt\.Skip\s*\(/;
+export const SAFETY_LIMITS = { deletedFiles: 3, deletedLines: 300 };
+
+export function analyzeSafety({ deletedFiles = [], numstat = [], skippedTestFiles = [], pairMode = true } = {}) {
+  const issues = [];
+  const del = deletedFiles.filter(Boolean);
+  if (del.length >= SAFETY_LIMITS.deletedFiles) {
+    const shown = del.slice(0, 4).join(", ") + (del.length > 4 ? `, +${del.length - 4} more` : "");
+    issues.push(`Deleted ${del.length} tracked files (${shown})`);
+  }
+  const prot = del.filter((f) => PROTECTED_PATH.test(f));
+  if (prot.length) issues.push(`Deleted protected file(s): ${prot.join(", ")}`);
+  let added = 0, deleted = 0;
+  for (const row of numstat) { added += row.added || 0; deleted += row.deleted || 0; }
+  if (deleted >= SAFETY_LIMITS.deletedLines && deleted > added * 2) {
+    issues.push(`Large deletion (-${deleted} / +${added} lines)`);
+  }
+  if (pairMode) {
+    const delTests = del.filter((f) => TEST_PATH.test(f));
+    if (delTests.length) issues.push(`Deleted test file(s): ${delTests.join(", ")}`);
+    const skipped = [...new Set(skippedTestFiles.filter(Boolean))];
+    if (skipped.length) issues.push(`Added test skip/only marker(s) in: ${skipped.join(", ")}`);
+  }
+  return { ok: issues.length === 0, issues, sig: issues.join(" | ") };
+}
+
+async function checkDestruction(p, fromSha, toSha) {
+  if (!fromSha || !toSha || fromSha === toSha) return { ok: true, issues: [], sig: "" };
+  const [delR, statR] = await Promise.all([
+    sh(p, 'git diff --name-only --diff-filter=D "$1" "$2" -- . ":(exclude)$3"', [fromSha, toSha, REVIEW_DIR]).catch(() => null),
+    sh(p, 'git diff --numstat "$1" "$2" -- . ":(exclude)$3"', [fromSha, toSha, REVIEW_DIR]).catch(() => null),
+  ]);
+  const deletedFiles = (delR?.stdout ?? "").split("\n").filter(Boolean);
+  const numstat = (statR?.stdout ?? "").split("\n").filter(Boolean).map((line) => {
+    const [a, d, ...rest] = line.split("\t");
+    return { added: a === "-" ? 0 : Number(a) || 0, deleted: d === "-" ? 0 : Number(d) || 0, file: rest.join("\t") };
+  });
+  const skippedTestFiles = [];
+  if (p.kind !== "team") {
+    const changedTests = numstat.map((x) => x.file).filter((f) => f && TEST_PATH.test(f));
+    if (changedTests.length) {
+      const diffR = await sh(p, 'git diff -U0 "$1" "$2" -- "$@"', [fromSha, toSha, ...changedTests]).catch(() => null);
+      let cur = null;
+      for (const line of (diffR?.stdout ?? "").split("\n")) {
+        if (line.startsWith("+++ b/")) cur = line.slice(6);
+        else if (line.startsWith("+") && !line.startsWith("+++") && cur && TEST_SKIP_RE.test(line.slice(1))) {
+          skippedTestFiles.push(cur);
+        }
+      }
+    }
+  }
+  return analyzeSafety({ deletedFiles, numstat, skippedTestFiles, pairMode: p.kind !== "team" });
+}
+
+function pauseForSafety(tab, issues, sig) {
+  const summary = issues.join("; ");
+  const isGit = sig === "git";
+  update(tab, {
+    auto: false,
+    phase: "safety_paused",
+    safetyAlert: isGit ? null : { sig, issues },
+    note: `Safety pause: ${summary}`,
+  });
+  notify({
+    title: "coderwriter: safety check paused run",
+    body: isGit ? summary : `${summary}. Inspect the diff or restore a snapshot in Reviews; press Review or Auto again to continue anyway.`,
+    level: "warning",
+    action: { name: "tab.select", args: { id: tab } },
+  });
+  return "safety";
+}
+
 async function guardReviewerEdits(tab, g, before, round) {
   if (!before) return [];
   const p = pair(tab);
@@ -903,19 +1061,20 @@ async function guardReviewerEdits(tab, g, before, round) {
   if (gen[tab] !== g) throw new Cancelled();
   if (!edited.length) return [];
   const shown = edited.slice(0, 4).join(", ") + (edited.length > 4 ? `, +${edited.length - 4} more` : "");
-  update(tab, { note: `Round ${round}: reviewer edited project files (${shown}): asking it to revert` });
-  notify({ title: "coderwriter: the reviewer edited project files",
-    body: `The reviewer should not edit project files (${shown}). Asking it to revert.`,
-    level: "warning", action: { name: "tab.select", args: { id: tab } } });
-  await say(tab, g, p.reviewer.t, "reviewer", reviewerGuardBrief(edited));
+  await revertFiles(p, before, edited);
   const still = await touchedFiles(pair(tab), before);
   if (gen[tab] !== g) throw new Cancelled();
-  if (still.length) {
-    const left = still.slice(0, 4).join(", ") + (still.length > 4 ? `, +${still.length - 4} more` : "");
-    notify({ title: "coderwriter: reviewer left project files changed",
-      body: `The reviewer left changes in: ${left}. Restore round ${round} in Reviews if needed.`,
+  if (!still.length) {
+    update(tab, { note: `Round ${round}: reviewer edited project files (${shown}) — reverted automatically` });
+    notify({ title: "coderwriter: reverted reviewer edits",
+      body: `The reviewer edited project files (${shown}); coderwriter restored them from round ${round}'s snapshot.`,
       level: "warning", action: { name: "tab.select", args: { id: tab } } });
+    return [];
   }
+  const left = still.slice(0, 4).join(", ") + (still.length > 4 ? `, +${still.length - 4} more` : "");
+  notify({ title: "coderwriter: reviewer left project files changed",
+    body: `Could not auto-revert: ${left}. Restore round ${round} in Reviews if needed.`,
+    level: "warning", action: { name: "tab.select", args: { id: tab } } });
   return still;
 }
 
@@ -944,17 +1103,22 @@ async function waitPlan(tab, g, before) {
       if (touched.length) {
         const sig = touched.join(",");
         const shown = touched.slice(0, 4).join(", ") + (touched.length > 4 ? `, +${touched.length - 4} more` : "");
+        const reverted = await revertFiles(p, base, touched);
+        const still = reverted ? await touchedFiles(pair(tab), base) : touched;
+        if (gen[tab] !== g) throw new Cancelled();
         if (corrections < 2 && sig !== warnedSig) {
           corrections++;
           warnedSig = sig;
-          update(tab, { note: `PM edited project files (${shown}): reminding it to revert and only plan` });
+          update(tab, { note: `PM edited project files (${shown}): ${still.length ? "reminding it to revert and only plan" : "reverted automatically, reminding PM to only plan"}` });
           notify({ title: "coderwriter: the PM edited project files",
-            body: `The PM should only write ${PLAN}, not edit code (${shown}). Asking it to revert.`,
+            body: still.length
+              ? `The PM should only write ${PLAN}, not edit code (${shown}). Asking it to revert.`
+              : `The PM edited project files (${shown}); coderwriter reverted them automatically.`,
             level: "warning", action: { name: "tab.select", args: { id: tab } } });
-          await say(tab, g, pm.t, "pm", pmGuardBrief(touched));
+          await say(tab, g, pm.t, "pm", pmGuardBrief(touched, still.length === 0));
           checkedIdle = false;
           continue;
-        } else if (sig !== warnedSig) {
+        } else if (still.length && sig !== warnedSig) {
           warnedSig = sig;
           notify({ title: "coderwriter: PM left project files changed",
             body: `Project files changed during planning (${shown}). Restore round 0 in Reviews before approving.`,
@@ -991,15 +1155,15 @@ async function startSubtask(tab, g, at) {
     `Read ${PROGRESS} first, then build on that work; don't redo or revert it.` : "";
   const text = `Subtask ${at + 1} of ${q.plan.tasks.length} from the PM's plan (${PLAN})${q.task ? `; the whole task: ${q.task.replace(/\s+/g, " ")}` : ""}.` +
     `${earlier}\n\n## ${s.title}\n${s.body}`;
-  await say(tab, g, q.writer.t, "writer", writerBrief(text, true));
+  await say(tab, g, q.writer.t, "writer", writerBrief(text, { team: true, testCmd: pairTestCommand(q), constraints: q.constraints }));
   update(tab, { phase: "written", note: `Subtask ${at + 1}/${q.plan.tasks.length}: written, ready for review` });
 }
 
 // ---- the docs writer ------------------------------------------------------------
 // An optional fifth agent. Once every subtask has passed, it brings the documentation up
 // to date (README, changelog, docs/, other Markdown) and says what it changed in
-// .coderwriter/docs.md; then the PM reports. It may edit documentation only: what else
-// it changed is named in a warning (its turn is snapshotted on both sides).
+// .coderwriter/docs.md; then the PM reports. It may edit documentation only: any non-doc
+// edits are automatically reverted from the snapshot taken before it ran.
 const DOC_PATH = /(^|\/)(docs?|documentation)\/|\.(md|mdx|rst|adoc)$|(^|\/)(README|CHANGELOG|CHANGES|HISTORY|CONTRIBUTING|LICENSE)(\.[a-z]+)?$/i;
 function docsBrief(p) {
   const base = p.checkpoints?.[0];
@@ -1023,9 +1187,21 @@ async function writeDocs(tab, g) {
   const r = await sh(pair(tab), 'git diff --name-only "$1" "$2"', [before, after]).catch(() => null);
   const changed = (r?.stdout ?? "").split("\n").filter(Boolean);
   const other = changed.filter((f) => !DOC_PATH.test(f) && !f.startsWith(`${REVIEW_DIR}/`));
-  update(tab, { docsChanged: changed.filter((f) => !f.startsWith(`${REVIEW_DIR}/`)), docsOther: other });
-  if (other.length) notify({ title: "coderwriter: the docs writer changed code", body: `Not documentation: ${other.join(", ")}. Check them before you commit.`,
-    level: "warning", action: { name: "tab.select", args: { id: tab } } });
+  let still = other;
+  if (other.length) {
+    await revertFiles(pair(tab), before, other);
+    const left = new Set(await touchedFiles(pair(tab), before));
+    still = other.filter((f) => left.has(f));
+    notify({
+      title: still.length ? "coderwriter: the docs writer changed code" : "coderwriter: reverted docs writer code edits",
+      body: still.length
+        ? `Could not auto-revert non-documentation files: ${still.join(", ")}. Check them before you commit.`
+        : `The docs writer edited non-documentation files (${other.join(", ")}); coderwriter reverted them automatically.`,
+      level: "warning",
+      action: { name: "tab.select", args: { id: tab } },
+    });
+  }
+  update(tab, { docsChanged: changed.filter((f) => !f.startsWith(`${REVIEW_DIR}/`) && !other.includes(f)), docsOther: still });
 }
 
 // The final check begins: the agents are cleared, and the next round (the loop's, or
@@ -1070,9 +1246,16 @@ async function afterApproval(tab, g) {
   await remind(tab, g, pm.t, "pm", REPORT, () => exists(pair(tab), REPORT), (ok) => !ok);
   const pmEdited = await touchedFiles(pair(tab), beforeReport);
   if (pmEdited.length) {
-    notify({ title: "coderwriter: the PM edited project files",
-      body: `During reporting, the PM changed: ${pmEdited.join(", ")}. Check them before you commit.`,
-      level: "warning", action: { name: "tab.select", args: { id: tab } } });
+    await revertFiles(pair(tab), beforeReport, pmEdited);
+    const still = await touchedFiles(pair(tab), beforeReport);
+    notify({
+      title: still.length ? "coderwriter: the PM edited project files" : "coderwriter: reverted PM edits",
+      body: still.length
+        ? `During reporting, the PM changed: ${still.join(", ")}. Check them before you commit.`
+        : `During reporting, the PM edited project files (${pmEdited.join(", ")}); coderwriter reverted them automatically.`,
+      level: "warning",
+      action: { name: "tab.select", args: { id: tab } },
+    });
   }
   update(tab, { plan: { ...pair(tab).plan, done: true }, auto: false, phase: "approved", note: `All ${n} subtasks done: report in ${REPORT}` });
   notify({ title: "coderwriter: done", body: `${p.task || "The plan"}: all ${n} subtasks approved. The PM's report is in ${REPORT}.${worktreeNote(p)}`,
@@ -1152,17 +1335,25 @@ const short = (f, n = 90) => (f.length > n ? f.slice(0, n - 1) + "…" : f);
 // ---- test gate ------------------------------------------------------------------
 // A per-folder test command, run before each review. Its output goes to
 // .coderwriter/tests-<round>.txt; a failure goes back to the writer, not the reviewer.
+// When working in a git worktree, falls back to the source repo folder's test command.
 export const TEST_FIX_MAX = 3; // writer attempts at failing tests per round (auto loop)
-export function testCommand(folder) { return (prefs().tests[folder] ?? "").trim(); }
-export function setTestCommand(folder, cmd) {
+export function testCommand(folder, fallback = null) {
+  const t = prefs().tests;
+  return (t[folder] ?? (fallback ? t[fallback] : null) ?? "").trim();
+}
+export function pairTestCommand(p) { return testCommand(p?.folder, p?.sourceFolder ?? null); }
+export function setTestCommand(folder, cmd, sourceFolder = null) {
   const tests = { ...prefs().tests };
-  if (cmd.trim()) tests[folder] = cmd; else delete tests[folder];
+  const val = cmd.trim();
+  for (const dir of [folder, ...(sourceFolder && sourceFolder !== folder ? [sourceFolder] : [])]) {
+    if (val) tests[dir] = val; else delete tests[dir];
+  }
   setPrefs({ tests });
 }
 
 async function runTests(tab, round) {
   const p = pair(tab);
-  const cmd = testCommand(p.folder);
+  const cmd = pairTestCommand(p);
   if (!cmd) return null;
   const file = `${REVIEW_DIR}/tests-${round}.txt`;
   update(tab, { tests: { state: "running", round, cmd, file }, note: `Round ${round}: running tests` });
@@ -1192,7 +1383,7 @@ export function testsBrief(p) {
 // left alone. Round 0 is the folder before the writer started.
 const SNAP = 'git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 3; ' +
   'idx=$(mktemp) || exit 1; trap \'rm -f "$idx"\' EXIT; ' +
-  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp "$real" "$idx" || rm -f "$idx"; ' +
+  'real=$(git rev-parse --path-format=absolute --git-path index); [ -f "$real" ] && cp -p "$real" "$idx" || rm -f "$idx"; ' +
   'GIT_INDEX_FILE="$idx" git add -A :/ >/dev/null 2>&1 || exit 1; ' +
   'tree=$(GIT_INDEX_FILE="$idx" git write-tree) || exit 1; ' +
   'parent=$(git rev-parse -q --verify HEAD); ' +
@@ -1215,14 +1406,15 @@ async function checkpoint(tab, round) {
 
 // Put the files back as they were in a checkpoint (or any snapshot sha). What is there
 // now is kept first as "before-restore", so the restore itself can be undone.
+// Always excludes .coderwriter/ so reviews, plans and reports are preserved.
 const RESTORE = 'top=$(git rev-parse --show-toplevel) && cd "$top" || exit 1; ' +
-  'git diff --name-only -z --diff-filter=A "$1" "$2" | xargs -0 -r rm -f -- ; ' +
-  'git restore --source="$1" --worktree -- :/';
+  'git diff --name-only -z --diff-filter=A "$1" "$2" -- . ":(exclude)$3" | xargs -0 -r rm -f -- ; ' +
+  'git restore --source="$1" --worktree -- . ":(exclude)$3"';
 async function restoreTo(tab, sha, label) {
   const p = pair(tab);
   const undo = await snapshot(p, "before-restore", `coderwriter: before restoring ${label}`);
   if (!undo) throw new Error("Could not save the current files first, so nothing was restored");
-  const r = await exec("sh", ["-c", RESTORE, "sh", sha, undo], { cwd: p.folder, timeout: 120000, ...where(p) });
+  const r = await exec("sh", ["-c", RESTORE, "sh", sha, undo, REVIEW_DIR], { cwd: p.folder, timeout: 120000, ...where(p) });
   if (r.code !== 0) throw new Error(`Restore failed: ${(r.stderr || r.stdout).trim().split("\n").pop()}`);
   update(tab, { undo: { sha: undo, round: p.round ?? 0, verdict: p.verdict ?? null } });
   return undo;
@@ -1280,22 +1472,33 @@ async function reviewRound(tab, g, kinds = null) {
     notify({ title: "coderwriter: Ponytail review not installed", body: `Reviewing without it. ${SKILLS.lens.install}`, level: "warning" });
   }
   await settle(tab, g, p.writer.t, "writer");
+  const gitCheck = await checkGitIntegrity(tab, "writer");
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!gitCheck.ok) return pauseForSafety(tab, [gitCheck.reason], "git");
   const round = (p.round ?? 0) + 1;
+  await checkpoint(tab, round);
+  p = pair(tab);
+  if (!kinds) {
+    const safety = await checkDestruction(p, p.checkpoints?.[0] ?? null, p.checkpoints?.[round] ?? null);
+    if (gen[tab] !== g) throw new Cancelled();
+    if (!safety.ok && safety.sig !== p.safetyAck) return pauseForSafety(tab, safety.issues, safety.sig);
+  }
   const passed = await runTests(tab, round);
   if (gen[tab] !== g) throw new Cancelled();
   if (passed === false) {
     update(tab, { phase: "tests_failed", note: `Tests failed before round ${round}: Feedback sends them to the writer` });
     return "tests";
   }
-  await checkpoint(tab, round);
-  p = pair(tab);
   const what = kinds ? kinds.map((k) => SKILLS[k].name.toLowerCase()).join(" + ") : "reviewing";
-  update(tab, { round, phase: kinds ? "auditing" : "reviewing", verdict: null, repeats: [], testFixes: 0, note: `Round ${round}: ${what}`,
+  update(tab, { round, phase: kinds ? "auditing" : "reviewing", verdict: null, repeats: [], testFixes: 0, safetyAlert: null, note: `Round ${round}: ${what}`,
     ...(kinds ? { audits: { ...(p.audits ?? {}), [round]: kinds } } : {}) });
   await say(tab, g, p.reviewer.t, "reviewer", kinds ? auditBrief(p, round, kinds, found) : reviewBrief(p, round, lens));
   const v = await remind(tab, g, p.reviewer.t, "reviewer", `${REVIEW_DIR}/review-${round}.md`, () => verdictOf(pair(tab), round),
     (r) => r.verdict === "missing" || r.verdict === "unknown", ["APPROVED", "CHANGES_REQUESTED"]);
   await guardReviewerEdits(tab, g, p.checkpoints?.[round] ?? null, round);
+  const postGit = await checkGitIntegrity(tab, "reviewer");
+  if (gen[tab] !== g) throw new Cancelled();
+  if (!postGit.ok) return pauseForSafety(tab, [postGit.reason], "git");
   let repeats = [];
   if (v.verdict === "changes" && round > 1) {
     const before = await verdictOf(pair(tab), round - 1);
@@ -1328,6 +1531,7 @@ async function loop(tab, g) {
     if (!p?.auto || gen[tab] !== g) return;
     const verdict = p.kind === "team" ? await teamRound(tab, g) : await reviewRound(tab, g);
     p = pair(tab);
+    if (verdict === "safety") return;
     if (verdict === "tests") {
       if ((p.testFixes ?? 0) >= TEST_FIX_MAX) {
         update(tab, { auto: false, note: `Tests still fail after ${p.testFixes} tries: loop paused` });
@@ -1368,6 +1572,8 @@ async function loop(tab, g) {
 }
 
 export function review(tab) {
+  const alert = pair(tab)?.safetyAlert;
+  if (alert?.sig) update(tab, { safetyAck: alert.sig, safetyAlert: null });
   return job(tab, async (g) => {
     if (pair(tab)?.kind !== "team") return reviewRound(tab, g);
     const v = await teamRound(tab, g);
@@ -1397,7 +1603,8 @@ export function testNow(tab) {
   });
 }
 export function setAuto(tab, on) {
-  update(tab, { auto: on });
+  const alert = on ? pair(tab)?.safetyAlert : null;
+  update(tab, { auto: on, ...(alert?.sig ? { safetyAck: alert.sig, safetyAlert: null } : {}) });
   if (on && !busy[tab]) job(tab, (g) => loop(tab, g));
   if (!on) update(tab, { note: "Auto loop off" });
 }
@@ -1480,12 +1687,13 @@ async function arrangeTeam(w, r, tt, pm, docs = null) {
 }
 
 // Start a pair: two agents in a new tab of `space`, writer left, reviewer right.
-export async function start({ space, folder, task, writer, reviewer, tester = null, pm = null, docs = null, max, auto, lens = false, team = false, worktree = null, turnLimit = 30 }) {
+export async function start({ space, folder, sourceFolder = null, task, constraints = "", writer, reviewer, tester = null, pm = null, docs = null, max, auto, oneShot = false, lens = false, team = false, worktree = null, turnLimit = 30 }) {
   const machine = space.machine ?? null;
   const strip = (id) => (machine && id.startsWith(machine + "/") ? id.slice(machine.length + 1) : id);
   const raw = newTabId();
   const tab = machine ? `${machine}/${raw}` : raw;
   folder = folder || space.folder || home();
+  sourceFolder = sourceFolder || folder;
   await excludeReviews(folder, machine);
   const agyPmAgent = team && pm?.key === "antigravity" ? await ensureAgyPmAgent(machine) : false;
   // inTab: labelled into the new tab, which the app lays out side by side; a team's other
@@ -1494,7 +1702,7 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
     const args = ["run", "--bg", "--keep", "--json", "--no-parent", "--cwd", folder];
     if (machine) args.push("--on", machine);
     if (inTab) args.push("--label", `herdr.space=${strip(space.id)}`, "--label", `herdr.tab=${raw}`);
-    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...withShellPath([...launchArgv(agent, role),
+    args.push("--label", `coderwriter.role=${role}`, "--label", `coderwriter.pair=${raw}`, "--", ...withShellPath([...launchArgv(agent, role, { oneShot }),
       ...charterArgs(agent.key, role, { team, agyPmAgent })]));
     const r = await hcJson(args);
     if (!r.address) throw new Error(`Could not start the ${role} (${agent.name})`);
@@ -1508,13 +1716,15 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
   const role = (a, t) => (t ? { agent: a.key, name: a.name, t } : null);
   const roles = Object.fromEntries(Object.entries({ tester: role(tester, tt), pm: role(pm, pmT), docs: role(docs, dT) }).filter(([, v]) => v));
   update(tab, {
-    tab, space: space.id, machine, folder, task,
+    tab, space: space.id, machine, folder, sourceFolder, task, constraints,
     writer: { agent: writer.key, name: writer.name, t: w },
     reviewer: { agent: reviewer.key, name: reviewer.name, t: r },
     ...(team ? { stages: teamStageIds(tt), roles } : {}),
-    round: 0, max, auto, lens, kind: team ? "team" : "pair", worktree, turnLimit, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
+    round: 0, max, auto, oneShot, lens, kind: team ? "team" : "pair", worktree, turnLimit, verdict: null, phase: "starting", note: "Starting agents", started: Date.now(),
   });
-  // Round 0: the files before the writer touches them (no-op outside a git repo).
+  // Round 0: the files and HEAD before the writer touches them (no-op outside a git repo).
+  const headInfo = await gitHeadInfo(pair(tab));
+  if (headInfo) update(tab, { baseHead: headInfo.head, baseBranch: headInfo.branch });
   await checkpoint(tab, 0);
   // The tab appears once the app adopts the labelled terminals.
   for (let i = 0; i < 40; i++) {
@@ -1530,11 +1740,11 @@ export async function start({ space, folder, task, writer, reviewer, tester = nu
       // A plan from an earlier team in this folder must not pass for the new one.
       await sh(pair(tab), 'rm -f "$1" "$2" "$3"', [PLAN, REPORT, PROGRESS]).catch(() => null);
       update(tab, { phase: "planning", note: task ? "The PM is planning" : "Give the PM your task in its pane" });
-      await say(tab, g, pmT, "pm", pmBrief(task));
+      await say(tab, g, pmT, "pm", pmBrief(task, constraints));
       await waitPlan(tab, g, null);
     } else if (task) {
-      update(tab, { phase: "writing", note: "Writer is working" });
-      await say(tab, g, w, "writer", writerBrief(task, team));
+      update(tab, { phase: "writing", note: oneShot ? "One-shot: writer is working" : "Writer is working" });
+      await say(tab, g, w, "writer", writerBrief(task, { team, testCmd: pairTestCommand(pair(tab)), lens, oneShot, constraints }));
       update(tab, { phase: "written", note: "Writer finished: send to review" });
     } else {
       update(tab, { phase: "idle", note: "Type the task into the writer" });

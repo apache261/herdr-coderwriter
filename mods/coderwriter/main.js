@@ -91,6 +91,8 @@ class Bar {
             : `The ${role} agent (${key}) is not installed on ${space.machine ?? "this computer"}`);
         }
         const task = (req.task ?? "").trim();
+        const constraints = (req.constraints ?? "").trim();
+        const sourceFolder = folder;
         let worktree = null;
         if (req.worktree) {
           worktree = await P.makeWorktree(folder, space.machine ?? null, task);
@@ -99,8 +101,8 @@ class Bar {
         }
         this.starting = false;
         cx.notify();
-        await P.start({ space, folder, task, writer: w, reviewer: r, tester: tt, pm, docs, max: pr.max, auto: pr.auto && Boolean(task),
-          lens: Boolean(pr.lens), team: Boolean(pr.team), worktree, turnLimit: pr.turnLimit ?? 30 });
+        await P.start({ space, folder, sourceFolder, task, constraints, writer: w, reviewer: r, tester: tt, pm, docs, max: pr.max, auto: pr.auto && Boolean(task),
+          oneShot: Boolean(pr.oneShot && !pr.team), lens: Boolean(pr.lens), team: Boolean(pr.team), worktree, turnLimit: pr.turnLimit ?? 30 });
       } catch (e) {
         notify({ title: "coderwriter", body: String(e.message ?? e), level: "error" });
       }
@@ -174,7 +176,7 @@ class Bar {
 
   // The test gate: its last result, and the popup that sets the command.
   testsChip(t, p) {
-    const cmd = P.testCommand(p.folder);
+    const cmd = P.pairTestCommand(p);
     const s = p.tests?.state;
     const ok = t.done ?? t.ansi2;
     const icon = !cmd ? svg(I("flask")).size(13).text_color(t.dim)
@@ -202,7 +204,7 @@ class Bar {
     }
     steps.push({ id: "coder", icon: "pen", name: "Coder", s: ["writing", "fixing"].includes(p.phase) ? "active" : (p.round ?? 0) > 0 || p.phase === "written" ? "pass" : "pending",
       tip: ["writing", "fixing"].includes(p.phase) ? "working" : "" });
-    const ids = [...(res.guard ? ["guard"] : []), ...(p.stages ?? []).filter((id) => id !== "tests" || P.testCommand(p.folder))];
+    const ids = [...(res.guard ? ["guard"] : []), ...(p.stages ?? []).filter((id) => id !== "tests" || P.pairTestCommand(p))];
     for (const id of ids) {
       const r = res[id];
       const s = checking && p.stage === id ? "active" : r === "pass" ? "pass" : r === "fail" ? "fail" : r ? "unknown" : "pending";

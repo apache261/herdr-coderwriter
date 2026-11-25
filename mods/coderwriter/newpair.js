@@ -55,6 +55,8 @@ export class NewPair {
     this.folder = focused()?.cwd || panes().find((p) => p.focused)?.cwd || space?.folder || home();
     this.input = InputState.new({ placeholder: "What should be done?" });
     this.input.on("submit", (_e, cx) => this.start(cx));
+    this.constraints = InputState.new({ placeholder: "Optional: files not to touch, invariants not to break…" });
+    this.constraints.on("submit", (_e, cx) => this.start(cx));
     this.input.focus();
     cx.timer.after(50, () => this.input.focus());
     // Each role's own command line (used when its agent is "Command").
@@ -95,7 +97,7 @@ export class NewPair {
 
   start(cx) {
     if (this.problem()) { cx.notify(); return; }
-    setShared(NEW_PAIR, { task: this.input.value(), folder: this.folder, worktree: this.useWorktree(), at: Date.now() });
+    setShared(NEW_PAIR, { task: this.input.value(), constraints: this.constraints.value().trim(), folder: this.folder, worktree: this.useWorktree(), at: Date.now() });
     run("coderwriter.newpair");
     closeOverlay(props().overlay);
   }
@@ -236,8 +238,11 @@ export class NewPair {
     const keys = [...new Set([pr.writer, pr.reviewer, ...(pr.team ? [pr.tester, pr.pm, ...(pr.docsOn ? [pr.docs] : [])] : [])].map((k) => (P.isCustom(k) ? "codex" : k)))];
     const danger = keys.some(isDangerous) || [["writer", pr.writer], ["reviewer", pr.reviewer], ...(pr.team ? [["tester", pr.tester], ["pm", pr.pm], ["docs", pr.docs]] : [])]
       .some(([role, k]) => k === P.CMD && riskyCommand(pr.commands[role]));
-    const setMax = (n) => P.setPrefs({ max: Math.max(1, Math.min(10, n)) });
-    const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team);
+    const setMax = (n) => {
+      n = Math.max(1, Math.min(10, n));
+      P.setPrefs({ max: n, ...(n > 1 ? { oneShot: false } : {}) });
+    };
+    const auto = Boolean(pr.auto), lens = Boolean(pr.lens), team = Boolean(pr.team), oneShot = Boolean(pr.oneShot && !team);
 
     return v_flex().size_full().bg(t.popover).text_size(12.5).text_color(t.foreground)
       .child(div().id("np-body").flex_1().min_h(0).overflow_y_scrollbar().child(v_flex().gap(14).px(18).pt(16).pb(14)
@@ -265,6 +270,9 @@ export class NewPair {
           .child(this.label(t, "Task"))
           .child(Input.new(this.input).h(32).px(9).rounded(7).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
           .child(div().text_size(11).text_color(t.dim).child(team ? "Leave it empty to tell the PM yourself, in its pane." : "Leave it empty to type the task into the writer yourself.")))
+        .child(v_flex().gap(6)
+          .child(this.label(t, "Constraints / do not touch (optional)"))
+          .child(Input.new(this.constraints).h(28).px(9).rounded(7).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground)))
         .children((team ? ["pm", "writer", "tester", "reviewer", "docs"] : ["writer", "reviewer"]).map((role) => this.roleRow(t, role, team)))
         .child(h_flex().gap(14).items_center().text_size(11.8)
           .child(this.link(t, "np-launch", "terminal", "Launch flags…",
@@ -272,18 +280,29 @@ export class NewPair {
           .child(this.link(t, "np-recommended", "check", "Recommended setup", () => P.useRecommended()))
           .child(this.link(t, "np-models", "cpu", "Custom models…",
             () => openOverlay({ mod: "coderwriter", kind: "dialog", width: 600, height: 640, props: { role: "models" } }))))
-        .child(h_flex().gap(10).items_center()
+        .child(h_flex().flex_wrap().gap(8).items_center()
           .child(this.label(t, "Rounds"))
           .child(h_flex().h(28).px(4).gap(2).items_center().flex_none().rounded(7).border_1().border_color(t.border).bg(t.background)
             .child(this.iconButton(t, "max-minus", "minus", () => setMax(pr.max - 1), pr.max > 1))
             .child(div().px(4).child(String(pr.max)))
             .child(this.iconButton(t, "max-plus", "plus", () => setMax(pr.max + 1), pr.max < 10)))
           .child(div().flex_1())
+          .child(h_flex().id("one-shot").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
+            .border_1().border_color(oneShot ? t.accent : t.border).bg(oneShot ? t.selected : t.background)
+            .cursor_pointer().hover((s) => s.bg(t.hover))
+            .tooltip("Single-pass mode: bumps writer to high effort, self-verifies before handing off, and runs 1 strict review round")
+            .on_click((_e, cx) => {
+              P.setPrefs(oneShot ? { oneShot: false, max: pr.max === 1 ? 3 : pr.max } : { oneShot: true, team: false, max: 1, auto: true });
+              cx.notify();
+            })
+            .child(svg(I("play")).size(12).text_color(oneShot ? t.accent : t.dim))
+            .child("One-shot")
+            .when(oneShot, (el) => el.child(svg(I("check")).size(12).text_color(t.accent))))
           .child(h_flex().id("team").h(28).px(9).gap(7).items_center().flex_none().rounded(7)
             .border_1().border_color(team ? t.accent : t.border).bg(team ? t.selected : t.background)
             .cursor_pointer().hover((s) => s.bg(t.hover))
             .tooltip("A PM plans the task with you; then, per subtask, each round: the tester writes and runs tests, the test command, the reviewer's quality (Ponytail) and security checks; all failures go to the coder in one note")
-            .on_click((_e, cx) => { P.setPrefs({ team: !team }); cx.notify(); })
+            .on_click((_e, cx) => { P.setPrefs({ team: !team, ...(!team ? { oneShot: false } : {}) }); cx.notify(); })
             .child(svg(I("repeat")).size(13).text_color(team ? t.accent : t.dim))
             .child("Team")
             .when(team, (el) => el.child(svg(I("check")).size(12).text_color(t.accent))))
@@ -304,6 +323,8 @@ export class NewPair {
             .child("Auto")
             .child(div().w(26).h(15).rounded(8).p(2).flex().items_center().bg(auto ? t.accent : t.border).when(auto, (el) => el.justify_end())
               .child(div().size(11).rounded(6).bg(auto ? t.accent_foreground : t.background)))))
+        .when(oneShot, (el) => el.child(div().text_size(11.3).text_color(t.dim)
+          .child("One-shot: writer runs at high effort, self-verifies before handing off, and stops after 1 strict review round (safety checks stay on).")))
         .when(danger, (el) => el.child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.blocked)
           .child(svg(I("alert")).size(13))
           .child("Launch flags or a command skip permission prompts (Launch flags… above, or the command).")))))
